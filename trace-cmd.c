@@ -75,7 +75,7 @@ static int *client_ports;
 static int sfd;
 
 static int filter_task;
-static int filter_pid = -1;
+static char *filter_pids;
 
 struct func_list {
 	struct func_list *next;
@@ -308,9 +308,12 @@ static void reset_max_latency(void)
 	fclose(fp);
 }
 
-static void update_ftrace_pid(const char *pid)
+static void update_ftrace_pid(const char *pid_list)
 {
 	char *path;
+	char *pids;
+	char *pid;
+	char *sav;
 	int ret;
 	int fd;
 
@@ -318,9 +321,14 @@ static void update_ftrace_pid(const char *pid)
 	if (!path)
 		return;
 
+	pid = strdup(pid_list);
+	if (!pid)
+		die("malloc");
+
+	pids = strtok_r(pid, ",", &sav);
 	fd = open(path, O_WRONLY | O_TRUNC);
 	if (fd < 0)
-		return;
+		goto out;
 
 	ret = write(fd, pid, strlen(pid));
 
@@ -334,6 +342,24 @@ static void update_ftrace_pid(const char *pid)
 		die("error writing to %s", path);
 
 	close(fd);
+
+	while (pids) {
+		pid = pids;
+		pids = strtok_r(NULL, ",", &sav);
+
+		fd = open(path, O_WRONLY);
+		if (fd < 0)
+			goto out;
+
+		ret = write(fd, pid, strlen(pid));
+
+		if (ret < 0)
+			die("This kernel does not support multiple pids");
+		close(fd);
+	}
+
+ out:
+	free(pids);
 }
 
 static void update_pid_event_filters(const char *pid);
@@ -342,23 +368,26 @@ static void enable_tracing(void);
 static void update_task_filter(void)
 {
 	int pid = getpid();
-	char spid[100];
+	char *spid;
 
-	if (!filter_task && filter_pid < 0) {
+	if (!filter_task && !filter_pids) {
 		update_ftrace_pid("");
 		enable_tracing();
 		return;
 	}
 
-	if (filter_pid >= 0)
-		pid = filter_pid;
-
-	snprintf(spid, 100, "%d", pid);
+	if (filter_pids)
+		spid = strdup(filter_pids);
+	else {
+		spid = malloc_or_die(11);
+		snprintf(spid, 10, "%d", pid);
+	}
 
 	update_ftrace_pid(spid);
 
 	update_pid_event_filters(spid);
 
+	free(spid);
 	enable_tracing();
 }
 
@@ -801,10 +830,65 @@ static void disable_all(void)
 	clear_trace();
 }
 
+static char *
+make_pid_filter(const char *field, const char *pid_list, const char *pre)
+{
+	char *filter;
+	char *list;
+	char *pids;
+	char *pid;
+	char *sav;
+	int len;
+
+	list = strdup(pid_list);
+	if (!list)
+		die("malloc");
+
+	pid = strtok_r(list, ",", &sav);
+
+	if (pre)
+		len = strlen(pre) + 2;
+	else {
+		len = 0;
+		pre = "";
+	}
+
+	filter = malloc_or_die(strlen(pid) + strlen(field) + strlen("(==)") + 1 + len);
+	len = sprintf(filter, "%s%s(%s==%s)", pre, len ? "||" : "", field, pid);
+
+	pids = strtok_r(NULL, ",", &sav);
+
+	while (pids) {
+		int i;
+
+		/* Make sure we have a pid */
+		for (i=0; i < strlen(pids); i++) {
+			if (!isspace(pids[i]))
+				break;
+		}
+		if (i == strlen(pids))
+			break;
+
+		pid = pids;
+		pids = strtok_r(NULL, ",", &sav);
+
+		filter = realloc(filter, len + strlen(pid) + strlen(field) +
+				 strlen("||(==)") + 1);
+		if (!filter)
+			die("realloc");
+		len += sprintf(filter + len, "||(%s==%s)", field, pid);
+	}
+
+	free(list);
+
+	return filter;
+}
+
 static void update_filter(const char *event_name, const char *field,
-			  const char *pid)
+			  const char *pid_list)
 {
 	char buf[BUFSIZ];
+	char *pre;
 	char *filter_name;
 	char *path;
 	char *filter;
@@ -827,17 +911,16 @@ static void update_filter(const char *event_name, const char *field,
 	if (ret < 0)
 		die("Can't read %s", path);
 	close(fd);
+	if (ret >= BUFSIZ)
+		ret = BUFSIZ-1;
+	buf[ret] = 0;
+	pre = buf;
 
 	/* append unless there is currently no filter */
-	if (strncmp(buf, "none", 4) == 0) {
-		filter = malloc_or_die(strlen(pid) + strlen(field) +
-				       strlen("(==)") + 1);
-		sprintf(filter, "(%s==%s)", field, pid);
-	} else {
-		filter = malloc_or_die(strlen(pid) + strlen(field) +
-				       strlen(buf) + strlen("()||(==)") + 1);
-		sprintf(filter, "(%s)||(%s==%s)", buf, field, pid);
-	}
+	if (strncmp(buf, "none", 4) == 0)
+		pre = NULL;
+
+	filter = make_pid_filter(field, pid_list, pre);
 
 	fd = open(path, O_WRONLY);
 	if (fd < 0)
@@ -854,14 +937,13 @@ static void update_filter(const char *event_name, const char *field,
 	put_tracing_file(path);
 }
 
-static void update_pid_event_filters(const char *pid)
+static void update_pid_event_filters(const char *pid_list)
 {
 	struct event_list *event;
 	char *filter;
 
-	filter = malloc_or_die(strlen(pid) + strlen("(common_pid==)") + 1);
-	sprintf(filter, "(common_pid==%s)", pid);
-
+	filter = make_pid_filter("common_pid", pid_list, NULL);
+		
 	for (event = event_selection; event; event = event->next) {
 		if (!event->neg) {
 			if (event->filter) {
@@ -884,8 +966,8 @@ static void update_pid_event_filters(const char *pid)
 	 * Also make sure that the sched_switch to this pid
 	 * and wakeups of this pid are also traced.
 	 */
-	update_filter("sched/sched_switch", "next_pid", pid);
-	update_filter("sched/sched_wakeup", "pid", pid);
+	update_filter("sched/sched_switch", "next_pid", pid_list);
+	update_filter("sched/sched_wakeup", "pid", pid_list);
 }
 
 static void enable_events(void)
@@ -1351,7 +1433,7 @@ int main (int argc, char **argv)
 	int neg_event = 0;
 	int fset;
 	int cpu;
-
+	int len;
 	int c;
 
 	errno = 0;
@@ -1410,16 +1492,24 @@ int main (int argc, char **argv)
 				break;
 
 			case 'F':
-				if (filter_pid >= 0)
+				if (filter_pids)
 					die("-P and -F can not both be specified");
 				filter_task = 1;
 				break;
 			case 'P':
 				if (filter_task)
 					die("-P and -F can not both be specified");
-				if (filter_pid >= 0)
-					die("only one -P pid can be filtered at a time");
-				filter_pid = atoi(optarg);
+				if (filter_pids) {
+					len = strlen(filter_pids);
+					filter_pids = realloc(filter_pids,
+							      len + strlen(optarg) + 2);
+					if (!filter_pids)
+						die("realloc");
+					sprintf(filter_pids + len, ",%s", optarg);
+				} else
+					filter_pids = strdup(optarg);
+				if (!filter_pids)
+					die("malloc");
 				break;
 			case 'v':
 				if (extract)
@@ -1630,6 +1720,7 @@ int main (int argc, char **argv)
 	}
 
 	stop_threads();
+	free(filter_pids);
 
 	record_data();
 	delete_thread_data();
