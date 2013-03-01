@@ -146,12 +146,14 @@ int tracecmd_start_recording(struct tracecmd_recorder *recorder, unsigned long s
 		ret = splice(recorder->trace_fd, NULL, recorder->brass[1], NULL,
 			     recorder->page_size, 1 /* SPLICE_F_MOVE */);
 		if (ret < 0) {
-			warning("recorder error in splice input");
-			return -1;
+			if (errno != EAGAIN && errno != EINTR) {
+				warning("recorder error in splice input");
+				return -1;
+			}
 		}
 		ret = splice(recorder->brass[0], NULL, recorder->fd, NULL,
 			     recorder->page_size, 3 /* and NON_BLOCK */);
-		if (ret < 0 && errno != EAGAIN) {
+		if (ret < 0 && errno != EAGAIN && errno != EINTR) {
 			warning("recorder error in splice output");
 			return -1;
 		}
