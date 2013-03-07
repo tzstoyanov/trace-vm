@@ -546,18 +546,20 @@ static void read_data_info(struct tracecmd_input *handle)
 		if (filter_cpus) {
 			unsigned long long last_stamp = 0;
 			struct record *precord;
+			int first_record = 1;
 			int next_cpu = -1;
 			int i;
 
 			for (i = 0; (cpu = filter_cpus[i]) >= 0; i++) {
 				precord = tracecmd_peek_data(handle, cpu);
 				if (precord &&
-				    (!last_stamp || precord->ts < last_stamp)) {
+				    (first_record || precord->ts < last_stamp)) {
 					next_cpu = cpu;
 					last_stamp = precord->ts;
+					first_record = 0;
 				}
 			}
-			if (last_stamp)
+			if (!first_record)
 				record = tracecmd_read_data(handle, next_cpu);
 			else
 				record = NULL;
