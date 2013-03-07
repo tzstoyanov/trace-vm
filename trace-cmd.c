@@ -276,7 +276,7 @@ int main (int argc, char **argv)
 		exit(0);
 
 	} else if (strcmp(argv[1], "options") == 0) {
-		trace_option(argc, argv);
+		show_plugin_options();
 		exit(0);
 	} else if (strcmp(argv[1], "list") == 0) {
 		int events = 0;
