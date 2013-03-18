@@ -84,10 +84,10 @@ static inline guint hweight(guint mask)
 {
 	guint64 w = mask;
 
-	w -= (w >> 1) & 0x5555555555555555ul;
-	w =  (w & 0x3333333333333333ul) + ((w >> 2) & 0x3333333333333333ul);
-	w =  (w + (w >> 4)) & 0x0f0f0f0f0f0f0f0ful;
-	return (w * 0x0101010101010101ul) >> 56;
+	w -= (w >> 1) & 0x5555555555555555ull;
+	w =  (w & 0x3333333333333333ull) + ((w >> 2) & 0x3333333333333333ull);
+	w =  (w + (w >> 4)) & 0x0f0f0f0f0f0f0f0full;
+	return (w * 0x0101010101010101ull) >> 56;
 }
 
 static inline guint cpu_weight(guint64 *cpu_mask, guint cpus)
