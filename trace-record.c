@@ -2349,6 +2349,12 @@ static void remove_instances(void)
 		/* Only delete what we created */
 		if (instance->keep)
 			continue;
+
+		if (instance->tracing_on_fd > 0) {
+			close(instance->tracing_on_fd);
+			instance->tracing_on_fd = 0;
+		}
+
 		buf = malloc_or_die(strlen("instances/") + strlen(instance->name) + 1);
 		sprintf(buf, "instances/%s", instance->name);
 		path = tracecmd_get_tracing_file(buf);
