@@ -2133,8 +2133,8 @@ void tracecmd_close(struct tracecmd_input *handle)
 	free(handle->cpu_data);
 
 	close(handle->fd);
-	pevent_free(handle->pevent);
 	tracecmd_unload_plugins(handle->plugin_list);
+	pevent_free(handle->pevent);
 	free(handle);
 }
 
