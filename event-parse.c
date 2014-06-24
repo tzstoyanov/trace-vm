@@ -2376,7 +2376,7 @@ process_flags(struct event_format *event, struct print_arg *arg, char **tok)
 {
 	struct print_arg *field;
 	enum event_type type;
-	char *token;
+	char *token = NULL;
 
 	memset(arg, 0, sizeof(*arg));
 	arg->type = PRINT_FLAGS;
@@ -2429,7 +2429,7 @@ process_symbols(struct event_format *event, struct print_arg *arg, char **tok)
 {
 	struct print_arg *field;
 	enum event_type type;
-	char *token;
+	char *token = NULL;
 
 	memset(arg, 0, sizeof(*arg));
 	arg->type = PRINT_SYMBOL;
@@ -2468,7 +2468,7 @@ process_hex(struct event_format *event, struct print_arg *arg, char **tok)
 {
 	struct print_arg *field;
 	enum event_type type;
-	char *token;
+	char *token = NULL;
 
 	memset(arg, 0, sizeof(*arg));
 	arg->type = PRINT_HEX;
