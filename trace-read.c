@@ -100,6 +100,8 @@ static int wakeup_new_id;
 static int sched_id;
 static int stacktrace_id;
 
+static int profile;
+
 static int buffer_breaks = 0;
 
 static struct format_field *wakeup_task;
@@ -739,6 +741,11 @@ static void show_data(struct tracecmd_input *handle,
 
 	test_save(record, cpu);
 
+	if (profile) {
+		trace_profile_record(handle, record, cpu);
+		return;
+	}
+
 	trace_seq_init(&s);
 	if (record->missed_events > 0)
 		trace_seq_printf(&s, "CPU:%d [%lld EVENTS DROPPED]\n",
@@ -1043,6 +1050,8 @@ static void read_data_info(struct list_head *handle_list, int stat_only)
 			stacktrace_id = event->id;
 
 		init_wakeup(handles->handle);
+		trace_init_profile(handles->handle);
+
 		process_filters(handles);
 
 		/* If this file has buffer instances, get the handles for them */
@@ -1088,6 +1097,9 @@ static void read_data_info(struct list_head *handle_list, int stat_only)
 			free_handle_record(last_handle);
 		}
 	} while (last_record);
+
+	if (profile)
+		trace_profile();
 
 	list_for_each_entry(handles, handle_list, list) {
 		free_filters(handles->event_filters);
@@ -1234,6 +1246,7 @@ static void set_event_flags(struct pevent *pevent, struct event_str *list,
 }
 
 enum {
+	OPT_profile	= 245,
 	OPT_event	= 246,
 	OPT_comm	= 247,
 	OPT_boundary	= 248,
@@ -1301,6 +1314,7 @@ void trace_report (int argc, char **argv)
 			{"nodate", no_argument, NULL, OPT_nodate},
 			{"stat", no_argument, NULL, OPT_stat},
 			{"boundary", no_argument, NULL, OPT_boundary},
+			{"profile", no_argument, NULL, OPT_profile},
 			{"help", no_argument, NULL, '?'},
 			{NULL, 0, NULL, 0}
 		};
@@ -1417,6 +1431,9 @@ void trace_report (int argc, char **argv)
 		case OPT_boundary:
 			/* Debug to look at buffer breaks */
 			buffer_breaks = 1;
+			break;
+		case OPT_profile:
+			profile = 1;
 			break;
 		default:
 			usage(argv);
