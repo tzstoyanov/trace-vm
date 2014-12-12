@@ -454,12 +454,6 @@ static void process_filters(struct handle_list *handles)
 	}
 }
 
-static int filter_record(struct tracecmd_input *handle,
-			 struct pevent_record *record)
-{
-	return 0;
-}
-
 static void init_wakeup(struct tracecmd_input *handle)
 {
 	struct event_format *event;
@@ -653,9 +647,6 @@ static void show_data(struct tracecmd_input *handle, struct pevent_record *recor
 	struct pevent *pevent;
 	struct trace_seq s;
 	int cpu = record->cpu;
-
-	if (filter_record(handle, record))
-		return;
 
 	pevent = tracecmd_get_pevent(handle);
 
