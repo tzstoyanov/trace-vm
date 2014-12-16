@@ -1136,6 +1136,7 @@ static void make_sched_event(struct event_list **event, struct event_list *sched
 	sprintf(p, "%s/filter", sched_path);
 
 	*event = create_event(path, sched);
+	free(path);
 }
 
 static void test_event(struct event_list *event, const char *path,
