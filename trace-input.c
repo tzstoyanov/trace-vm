@@ -2218,6 +2218,7 @@ void tracecmd_close(struct tracecmd_input *handle)
 		}
 	}
 
+	free(handle->cpustats);
 	free(handle->cpu_data);
 	close(handle->fd);
 
