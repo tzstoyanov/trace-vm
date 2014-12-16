@@ -1127,7 +1127,7 @@ static void make_sched_event(struct event_list **event, struct event_list *sched
 	if (*event)
 		return;
 
-	path = malloc_or_die(strlen(sched->filter_file) + strlen(sched_path) + 1);
+	path = malloc_or_die(strlen(sched->filter_file) + strlen(sched_path) + 2);
 
 	sprintf(path, "%s", sched->filter_file);
 
