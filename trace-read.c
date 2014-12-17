@@ -731,7 +731,7 @@ static void finish_wakeup(void)
 }
 
 void trace_show_data(struct tracecmd_input *handle,
-		     struct pevent_record *record, int cpu)
+		     struct pevent_record *record, int cpu, int profile)
 {
 	struct pevent *pevent;
 	struct trace_seq s;
@@ -1093,7 +1093,7 @@ static void read_data_info(struct list_head *handle_list, int stat_only)
 		}
 		if (last_record) {
 			print_handle_file(last_handle);
-			trace_show_data(last_handle->handle, last_record, last_cpu);
+			trace_show_data(last_handle->handle, last_record, last_cpu, profile);
 			free_handle_record(last_handle);
 		}
 	} while (last_record);
