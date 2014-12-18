@@ -2297,6 +2297,9 @@ static void start_threads(void)
 
 	memset(pids, 0, sizeof(*pids) * cpu_count * (buffers + 1));
 
+	/* Make sure all output is flushed before forking */
+	fflush(stdout);
+
 	for_all_instances(instance) {
 		int x;
 		for (x = 0; x < cpu_count; x++)
