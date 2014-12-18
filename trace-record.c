@@ -1567,6 +1567,9 @@ static void start_threads(void)
 
 	memset(pids, 0, sizeof(*pids) * cpu_count);
 
+	/* Make sure all output is flushed before forking */
+	fflush(stdout);
+
 	for (i = 0; i < cpu_count; i++) {
 		pids[i] = create_recorder(i, 0);
 	}
