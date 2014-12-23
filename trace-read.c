@@ -648,11 +648,11 @@ static void finish_wakeup(void)
 	}
 }
 
-static void show_data(struct tracecmd_input *handle,
-		      struct pevent_record *record, int cpu)
+static void show_data(struct tracecmd_input *handle, struct pevent_record *record)
 {
 	struct pevent *pevent;
 	struct trace_seq s;
+	int cpu = record->cpu;
 
 	if (filter_record(handle, record))
 		return;
@@ -664,10 +664,9 @@ static void show_data(struct tracecmd_input *handle,
 	trace_seq_init(&s);
 	if (record->missed_events > 0)
 		trace_seq_printf(&s, "CPU:%d [%lld EVENTS DROPPED]\n",
-				 record->cpu, record->missed_events);
+				 cpu, record->missed_events);
 	else if (record->missed_events < 0)
-		trace_seq_printf(&s, "CPU:%d [EVENTS DROPPED]\n",
-				 record->cpu);
+		trace_seq_printf(&s, "CPU:%d [EVENTS DROPPED]\n", cpu);
 	pevent_print_event(pevent, &s, record);
 	if (s.len && *(s.buffer + s.len - 1) == '\n')
 		s.len--;
@@ -715,12 +714,10 @@ test_filters(struct filter *event_filters, struct pevent_record *record, int neg
 	return ret;
 }
 
-static struct pevent_record *
-get_next_record(struct handle_list *handles, int *next_cpu)
+static struct pevent_record *get_next_record(struct handle_list *handles)
 {
 	struct pevent_record *record;
 	int found = 0;
-	int next;
 	int cpu;
 	int ret;
 
@@ -731,7 +728,6 @@ get_next_record(struct handle_list *handles, int *next_cpu)
 		return NULL;
 
 	do {
-		next = -1;
 		if (filter_cpus) {
 			long long last_stamp = -1;
 			struct pevent_record *precord;
@@ -775,7 +771,6 @@ get_next_record(struct handle_list *handles, int *next_cpu)
 	handles->record = record;
 	if (!record)
 		handles->done = 1;
-	*next_cpu = next;
 
 	return record;
 }
@@ -816,9 +811,7 @@ static void read_data_info(struct list_head *handle_list, int stat_only)
 	struct handle_list *last_handle;
 	struct pevent_record *record;
 	struct pevent_record *last_record;
-	int last_cpu;
 	int cpus;
-	int next;
 	int ret;
 
 	list_for_each_entry(handles, handle_list, list) {
@@ -860,17 +853,16 @@ static void read_data_info(struct list_head *handle_list, int stat_only)
 		last_record = NULL;
 
 		list_for_each_entry(handles, handle_list, list) {
-			record = get_next_record(handles, &next);
+			record = get_next_record(handles);
 			if (!last_record ||
 			    (record && record->ts < last_record->ts)) {
 				last_record = record;
 				last_handle = handles;
-				last_cpu = next;
 			}
 		}
 		if (last_record) {
 			print_handle_file(last_handle);
-			show_data(last_handle->handle, last_record, last_cpu);
+			show_data(last_handle->handle, last_record);
 			free_handle_record(last_handle);
 		}
 	} while (last_record);
