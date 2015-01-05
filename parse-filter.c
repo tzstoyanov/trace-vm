@@ -991,6 +991,7 @@ process_filter(struct event_format *event, struct filter_arg **parg,
 					*parg = current_op;
 				else
 					*parg = current_exp;
+				free(token);
 				return 1;
 			}
 			break;
@@ -1090,6 +1091,7 @@ process_filter(struct event_format *event, struct filter_arg **parg,
 
 	*parg = current_op;
 
+	free(token);
 	return 0;
 
  fail_print:
