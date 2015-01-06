@@ -2844,6 +2844,7 @@ static void remove_instances(void)
 static void check_plugin(const char *plugin)
 {
 	char *buf;
+	char *str;
 	char *tok;
 
 	/*
@@ -2857,8 +2858,9 @@ static void check_plugin(const char *plugin)
 	if (!buf)
 		die("No plugins available");
 
-	while ((tok = strtok(buf, " "))) {
-		buf = NULL;
+	str = buf;
+	while ((tok = strtok(str, " "))) {
+		str = NULL;
 		if (strcmp(tok, plugin) == 0)
 			goto out;
 	}
