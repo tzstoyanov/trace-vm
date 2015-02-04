@@ -2339,6 +2339,18 @@ static void record_all_events(void)
 	listed_events = list;
 }
 
+static void check_doing_something(void)
+{
+	struct buffer_instance *instance;
+
+	for_all_instances(instance) {
+		if (instance->events)
+			return;
+	}
+
+	die("no event or plugin was specified... aborting");
+}
+
 enum {
 	OPT_nosplice	= 253,
 	OPT_funcstack	= 254,
@@ -2616,14 +2628,14 @@ void trace_record (int argc, char **argv)
 		run_command = 1;
 	}
 
-	if (!events && !plugin && !extract)
-		die("no event or plugin was specified... aborting");
+	if (!plugin && !extract)
+		check_doing_something();
 
 	/*
 	 * If top_instance doesn't have any plugins or events, then
 	 * remove it from being processed.
 	 */
-	if (!plugin && !instance->event_next) {
+	if (!extract && !plugin && !instance->event_next) {
 		if (!buffer_instances)
 			die("No instances reference??");
 		first_instance = buffer_instances;
