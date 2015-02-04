@@ -163,14 +163,13 @@ struct buffer_instance {
 };
 
 static struct buffer_instance top_instance;
-static struct buffer_instance *instances;
+static struct buffer_instance *buffer_instances;
 
-#define for_each_instance(i) for (i = instances; i; i = (i)->next)
+#define for_each_instance(i) for (i = buffer_instances; i; i = (i)->next)
 #define for_all_instances(i) for (i = first_instance; i; \
 				  i = i == &top_instance ? buffer_instances : (i)->next)
 
 static struct buffer_instance top_instance = { .keep = 1 };
-static struct buffer_instance *buffer_instances;
 static struct buffer_instance *first_instance = &top_instance;
 
 static struct tracecmd_recorder *recorder;
@@ -185,8 +184,8 @@ static void init_instance(struct buffer_instance *instance)
 static void add_instance(struct buffer_instance *instance)
 {
 	init_instance(instance);
-	instance->next = instances;
-	instances = instance;
+	instance->next = buffer_instances;
+	buffer_instances = instance;
 	buffers++;
 }
 
