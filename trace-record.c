@@ -3651,9 +3651,9 @@ static void add_hook(struct buffer_instance *instance, const char *arg)
 	}
 }
 
-static void update_first_instance(int topt)
+void update_first_instance(struct buffer_instance *instance, int topt)
 {
-	if (topt)
+	if (topt || instance == &top_instance)
 		first_instance = &top_instance;
 	else
 		first_instance = buffer_instances;
@@ -3737,7 +3737,7 @@ void trace_record (int argc, char **argv)
 			}
 
 		}
-		update_first_instance(topt);
+		update_first_instance(instance, topt);
 		disable_tracing();
 		exit(0);
 	} else if (strcmp(argv[1], "restart") == 0) {
@@ -3765,7 +3765,7 @@ void trace_record (int argc, char **argv)
 			}
 
 		}
-		update_first_instance(topt);
+		update_first_instance(instance, topt);
 		enable_tracing();
 		exit(0);
 	} else if (strcmp(argv[1], "reset") == 0) {
@@ -3796,7 +3796,7 @@ void trace_record (int argc, char **argv)
 				break;
 			}
 		}
-		update_first_instance(topt);
+		update_first_instance(instance, topt);
 		disable_all(1);
 		set_buffer_size();
 		clear_filters();
@@ -4080,7 +4080,7 @@ void trace_record (int argc, char **argv)
 	} else
 		topt = 1;
 
-	update_first_instance(topt);
+	update_first_instance(instance, topt);
 
 	if (!extract)
 		check_doing_something();
