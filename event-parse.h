@@ -173,6 +173,8 @@ struct plugin_option {
 #define NSECS_PER_SEC		1000000000ULL
 #define NSECS_PER_USEC		1000ULL
 
+#define USECS_PER_SEC		1000000ULL
+
 enum format_flags {
 	FIELD_IS_ARRAY		= 1,
 	FIELD_IS_POINTER	= 2,
