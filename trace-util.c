@@ -711,6 +711,7 @@ char *tracecmd_find_tracing_dir(void)
 			} else {
 				if (mount_debugfs() < 0) {
 					warning("debugfs not mounted, please mount");
+					free(debug_str);
 					return NULL;
 				}
 				strcpy(fspath, DEBUGFS_PATH);
