@@ -67,6 +67,7 @@ endif
 
 HELP_DIR = -DHELP_DIR=$(html_install)
 HELP_DIR_SQ = '$(subst ','\'',$(HELP_DIR))'
+#' emacs highlighting gets confused by the above escaped quote.
 
 # copy a bit from Linux kbuild
 
