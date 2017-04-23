@@ -283,6 +283,7 @@ static void add_input(const char *file)
 	struct input_files *item;
 
 	item = malloc_or_die(sizeof(*item));
+	memset(item, 0, sizeof(*item));
 	item->file = file;
 	list_add_tail(&item->list, &input_files);
 }
