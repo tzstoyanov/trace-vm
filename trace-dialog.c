@@ -217,7 +217,7 @@ void warning(const char *fmt, ...)
 	errno = 0;
 
 	trace_dialog(GTK_WINDOW(parent_window), TRACE_GUI_WARNING,
-		     str->str);
+		     "%s", str->str);
 
 	g_string_free(str, TRUE);
 }
