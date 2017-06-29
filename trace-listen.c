@@ -67,8 +67,6 @@ static void put_temp_file(char *file)
 	free(file);
 }
 
-#define MAX_PATH 1024
-
 static void signal_setup(int sig, sighandler_t handle)
 {
 	struct sigaction action;
@@ -82,9 +80,9 @@ static void signal_setup(int sig, sighandler_t handle)
 
 static void delete_temp_file(const char *host, const char *port, int cpu)
 {
-	char file[MAX_PATH];
+	char file[PATH_MAX];
 
-	snprintf(file, MAX_PATH, TEMP_FILE_STR);
+	snprintf(file, PATH_MAX, TEMP_FILE_STR);
 	unlink(file);
 }
 
