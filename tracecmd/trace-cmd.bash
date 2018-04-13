@@ -155,6 +155,42 @@ __trace_cmd_record_complete()
     esac
 }
 
+__trace_cmd_connect_complete()
+{
+    local prev=$1
+    local cur=$2
+    shift 2
+    local words=("$@")
+    local w="${words[1]}"
+
+    case "$prev" in
+	connect)
+	    LIST=( $(compgen -d "/var/lib/trace-cmd/virt/$cur"))
+	    if [ ${#LIST[@]} -gt 0 ]; then
+		COMPREPLY=(${LIST[@]/*\//})
+		return 0;
+	    fi
+	    ;;
+	-a)
+	    compopt -o nospace
+	    if [ -z "$cur" ]; then
+		COMPREPLY=( $(compgen -d "/var/lib/trace-cmd/virt/"))
+		return 0;
+	    fi
+	    COMPREPLY=( $(compgen -G "$cur*.in" ))
+	    COMPREPLY=(${COMPREPLY[@]%.in})
+	    if [ ${#COMPREPLY[@]} -eq 1 ]; then
+		compopt +o nospace
+	    fi
+	    if [ ${#COMPREPLY[@]} -eq 0 ]; then
+		__show_files "$cur"
+	    fi
+	    return 0;
+	    ;;
+    esac
+    __show_command_options "$w" "${cur}"
+}
+
 __trace_cmd_report_complete()
 {
     local prev=$1
@@ -233,6 +269,10 @@ _trace_cmd_complete()
 	    ;;
 	report)
 	    __trace_cmd_report_complete "${prev}" "${cur}" ${words[@]}
+	    return 0
+	    ;;
+	connect)
+	    __trace_cmd_connect_complete "${prev}" "${cur}" ${words[@]}
 	    return 0
 	    ;;
         *)
