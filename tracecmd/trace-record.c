@@ -5153,7 +5153,7 @@ static void record_trace(int argc, char **argv,
 	 * If top_instance doesn't have any plugins or events, then
 	 * remove it from being processed.
 	 */
-	if (!__check_doing_something(&top_instance)) {
+	if (!__check_doing_something(&top_instance) && buffer_instances) {
 		first_instance = buffer_instances;
 		/*
 		 * If only one instance was instantiated and --virt
