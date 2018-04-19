@@ -1705,6 +1705,8 @@ add_domain(const char *domain, const char *agent_fifo,
 
 	unlink_sock = 0;
 
+	signal(SIGINT, SIG_IGN);
+
 	guest_listener(mgr);
 
 	exit(0);
