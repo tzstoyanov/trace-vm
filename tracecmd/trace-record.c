@@ -500,6 +500,25 @@ static char *get_temp_file(struct buffer_instance *instance, int cpu)
 	return file;
 }
 
+static char *get_meta_data_temp_file(struct buffer_instance *instance)
+{
+	const char *name = instance->name;
+	char *file = NULL;
+	int ret;
+
+	if (name) {
+		ret = asprintf(&file, "%s.%s.meta", output_file, name);
+		if (ret < 0)
+			die("Failed to allocate temp file for %s", name);
+	} else {
+		ret = asprintf(&file, "%s.meta", output_file);
+		if (ret < 0)
+			die("Failed to allocate temp file");
+	}
+
+	return file;
+}
+
 static void put_temp_file(char *file)
 {
 	free(file);
@@ -2952,6 +2971,42 @@ static struct tracecmd_msg_handle *setup_virtio(void)
 	return communicate_with_listener_virt(fd);
 }
 
+static void setup_guest(struct buffer_instance *instance)
+{
+	struct tracecmd_msg_handle *msg_handle = instance->msg_handle;
+	char *file;
+	int ret;
+	int fd;
+	/*
+	 * The instance already has the msg_handle we want.
+	 * Connect to the agent, and tell it to start recording,
+	 * and it will act like a VIRT record, and this record will
+	 * act like a listener.
+	 */
+	ret = tracecmd_msg_connect_to_agent(msg_handle, instance->argc,
+					    instance->argv);
+	if (ret < 0)
+		goto err;
+
+	/* Create a place to store the guest meta data */
+	file = get_meta_data_temp_file(instance);
+	if (!file)
+		goto err;
+
+	fd = open(file, O_WRONLY|O_CREAT, 0644);
+	put_temp_file(file);
+	if (fd < 0)
+		goto err;
+
+	ret = tracecmd_msg_collect_metadata(msg_handle, fd);
+	if (ret < 0)
+		goto err;
+
+	return;
+ err:
+		die("Can not connect to agent");
+}
+
 static void setup_connection(struct buffer_instance *instance)
 {
 	struct tracecmd_output *network_handle;
@@ -2959,6 +3014,9 @@ static void setup_connection(struct buffer_instance *instance)
 
 	if (instance->host)
 		msg_handle = setup_network(instance);
+	else if (instance->flags & BUFFER_FL_GUEST)
+		/* reading guests is more like being a listener */
+		return setup_guest(instance);
 	else
 		msg_handle = setup_virtio();
 
@@ -3003,7 +3061,7 @@ static int connect_to_agent(struct buffer_instance *instance)
 		free(str);
 	}
 
-	msg_handle = tracecmd_msg_handle_alloc(fd, TRACECMD_MSG_FL_MANAGER);
+	msg_handle = tracecmd_msg_handle_alloc(fd, TRACECMD_MSG_FL_SERVER);
 	if (!msg_handle) {
 		free(guest);
 		return -ENOMEM;

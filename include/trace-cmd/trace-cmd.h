@@ -391,6 +391,8 @@ int tracecmd_msg_connect_agent(struct tracecmd_msg_handle *msg_handle,
 			       const char *guest, int pid, int *cpu_count);
 int tracecmd_msg_get_fds(struct tracecmd_msg_handle *msg_handle,
 			 int cpu_count, int *fds);
+int tracecmd_msg_connect_to_agent(struct tracecmd_msg_handle *msg_handle, int argc,
+				  char * const *argv);
 
 
 /* --- Plugin handling --- */

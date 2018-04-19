@@ -670,6 +670,43 @@ int tracecmd_msg_send_init_data(struct tracecmd_msg_handle *msg_handle,
 	return 0;
 }
 
+static int send_string(struct tracecmd_msg_handle *msg_handle, const char *str);
+
+int tracecmd_msg_connect_to_agent(struct tracecmd_msg_handle *msg_handle,
+				  int argc, char * const *argv)
+{
+	struct tracecmd_msg msg;
+	int fd = msg_handle->fd;
+	int ret;
+	int i;
+
+	tracecmd_msg_init(MSG_CONNECT, &msg);
+	msg.connect.argc = htonl(argc);
+	ret = tracecmd_msg_send(fd, &msg);
+	if (ret < 0)
+		return ret;
+
+	for (i = 0; i < argc; i++) {
+		ret = send_string(msg_handle, argv[i]);
+		if (ret < 0)
+			return ret;
+	}
+
+	/* Wait for ACK */
+	ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+	if (ret < 0)
+		return ret;
+
+	ret = ntohl(msg.hdr.cmd);
+	msg_free(&msg);
+	if (ret != MSG_ACK) {
+		warning("Expected ACK and received %d\n", ret);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 int tracecmd_msg_agent_connect(struct tracecmd_msg_handle *msg_handle, int cpu_count)
 {
 	struct tracecmd_msg msg;
