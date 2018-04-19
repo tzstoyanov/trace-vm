@@ -120,6 +120,9 @@ void trace_show(int argc, char **argv);
 
 void trace_list(int argc, char **argv);
 
+int trace_record_agent(struct tracecmd_msg_handle *msg_handle,
+		       int argc, char **argv);
+
 void trace_usage(int argc, char **argv);
 
 struct hook_list;
@@ -185,6 +188,7 @@ enum buffer_instance_flags {
 	BUFFER_FL_PROFILE	= 1 << 1,
 	BUFFER_FL_VIRT		= 1 << 2,
 	BUFFER_FL_GUEST		= 1 << 3,
+	BUFFER_FL_AGENT		= 1 << 4,
 };
 
 struct func_list {

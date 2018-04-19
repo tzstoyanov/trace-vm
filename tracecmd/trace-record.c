@@ -2701,7 +2701,7 @@ static int create_recorder(struct buffer_instance *instance, int cpu,
 	} else if (client_ports) {
 		char *path;
 
-		if (!(instance->flags & BUFFER_FL_VIRT))
+		if (!(instance->flags & (BUFFER_FL_VIRT | BUFFER_FL_AGENT)))
 			connect_port(instance->host, cpu);
 		if (instance->name)
 			path = get_instance_dir(instance);
@@ -3014,6 +3014,8 @@ static void setup_connection(struct buffer_instance *instance)
 
 	if (instance->host)
 		msg_handle = setup_network(instance);
+	else if (instance->flags & BUFFER_FL_AGENT)
+		msg_handle = instance->msg_handle;
 	else if (instance->flags & BUFFER_FL_GUEST)
 		/* reading guests is more like being a listener */
 		return setup_guest(instance);
@@ -3022,7 +3024,8 @@ static void setup_connection(struct buffer_instance *instance)
 
 	/* Now create the handle through this socket */
 	if (msg_handle->version == V2_PROTOCOL) {
-		if (tracecmd_msg_send_init_data(msg_handle, &client_ports) < 0)
+		if (!(instance->flags & BUFFER_FL_AGENT) &&
+		    tracecmd_msg_send_init_data(msg_handle, &client_ports) < 0)
 			die("Cannot communicate with server");
 		network_handle = tracecmd_create_init_fd_msg(msg_handle, listed_events);
 		tracecmd_msg_finish_sending_metadata(msg_handle);
@@ -3127,7 +3130,8 @@ static void start_threads(enum trace_type type, int global)
 		int x, pid;
 
 		if (instance->host ||
-		    (instance->flags & (BUFFER_FL_VIRT | BUFFER_FL_GUEST))) {
+		    (instance->flags & (BUFFER_FL_VIRT | BUFFER_FL_GUEST |
+					BUFFER_FL_AGENT))) {
 			setup_connection(instance);
 			if (!instance->msg_handle)
 				die("Failed to make connection");
@@ -4681,12 +4685,14 @@ enum trace_cmd {
 	CMD_start,
 	CMD_stream,
 	CMD_profile,
-	CMD_record
+	CMD_record,
+	CMD_record_agent
 };
 
 struct common_record_context {
 	enum trace_cmd curr_cmd;
 	struct buffer_instance *instance;
+	struct tracecmd_msg_handle *msg_handle;
 	const char *output;
 	char *date2ts;
 	char *max_graph_depth;
@@ -4721,6 +4727,7 @@ static void init_common_record_context(struct common_record_context *ctx,
 #define IS_STREAM(ctx) ((ctx)->curr_cmd == CMD_stream)
 #define IS_PROFILE(ctx) ((ctx)->curr_cmd == CMD_profile)
 #define IS_RECORD(ctx) ((ctx)->curr_cmd == CMD_record)
+#define IS_AGENT(ctx) ((ctx)->curr_cmd == CMD_record_agent)
 
 static void add_argv(struct buffer_instance *instance, char *arg)
 {
@@ -4955,6 +4962,8 @@ static void parse_record_options(int argc,
 			ctx->disable = 1;
 			break;
 		case 'o':
+			if (IS_AGENT(ctx))
+				die("-o incompatible with agent recording");
 			if (ctx->instance->host)
 				die("-o incompatible with -N");
 			if (ctx->instance->flags & BUFFER_FL_VIRT)
@@ -5027,7 +5036,7 @@ static void parse_record_options(int argc,
 		case 'm':
 			if (max_kb)
 				die("-m can only be specified once");
-			if (!IS_RECORD(ctx))
+			if (!IS_RECORD(ctx) && !IS_AGENT(ctx))
 				die("only record take 'm' option");
 			max_kb = atoi(optarg);
 			break;
@@ -5159,7 +5168,8 @@ static enum trace_type get_trace_cmd_type(enum trace_cmd cmd)
 		{CMD_stream, TRACE_TYPE_STREAM},
 		{CMD_extract, TRACE_TYPE_EXTRACT},
 		{CMD_profile, TRACE_TYPE_STREAM},
-		{CMD_start, TRACE_TYPE_START}
+		{CMD_start, TRACE_TYPE_START},
+		{CMD_record_agent, TRACE_TYPE_RECORD}
 	};
 
 	for (int i = 0; i < ARRAY_SIZE(trace_type_per_command); i++) {
@@ -5259,7 +5269,7 @@ static void record_trace(int argc, char **argv,
 		set_clock(instance);
 
 	/* Record records the date first */
-	if (IS_RECORD(ctx) && ctx->date)
+	if ((IS_RECORD(ctx) || IS_AGENT(ctx)) && ctx->date)
 		ctx->date2ts = get_date_to_ts();
 
 	for_all_instances(instance) {
@@ -5296,7 +5306,11 @@ static void record_trace(int argc, char **argv,
 
 	if (ctx->run_command)
 		run_cmd(type, (argc - optind) - 1, &argv[optind + 1]);
-	else {
+	else if (ctx->instance && ctx->instance->flags & BUFFER_FL_AGENT) {
+		update_task_filter();
+		tracecmd_enable_tracing();
+		/* START HERE */
+	} else {
 		update_task_filter();
 		tracecmd_enable_tracing();
 		/* We don't ptrace ourself */
@@ -5317,7 +5331,7 @@ static void record_trace(int argc, char **argv,
 	if (!keep)
 		tracecmd_disable_all_tracing(0);
 
-	if (IS_RECORD(ctx)) {
+	if (IS_RECORD(ctx) || IS_AGENT(ctx)) {
 		record_data(ctx->date2ts, ctx->data_flags);
 		delete_thread_data();
 	} else
@@ -5450,4 +5464,38 @@ void trace_record(int argc, char **argv)
 	parse_record_options(argc, argv, CMD_record, &ctx);
 	record_trace(argc, argv, &ctx);
 	exit(0);
+}
+
+int trace_record_agent(struct tracecmd_msg_handle *msg_handle,
+		       int argc, char **argv)
+{
+	struct common_record_context ctx;
+	char **argv_plus;
+
+	/* Reset optind for getopt_long */
+	optind = 1;
+	/*
+	 * argc is the number of elements in argv, but we need to convert
+	 * argc and argv into "trace-cmd", "record", argv.
+	 * where argc needs to grow by two.
+	 */
+	argv_plus = calloc(argc + 2, sizeof(char *));
+	if (!argv_plus)
+		return -ENOMEM;
+
+	argv_plus[0] = "trace-cmd";
+	argv_plus[1] = "record";
+	memcpy(argv_plus + 2, argv, argc * sizeof(char *));
+	argc += 2;
+
+	parse_record_options(argc, argv_plus, CMD_record_agent, &ctx);
+	if (ctx.run_command)
+		return -EINVAL;
+	ctx.instance->flags |= BUFFER_FL_AGENT;
+	ctx.instance->msg_handle = msg_handle;
+	msg_handle->version = V2_PROTOCOL;
+	record_trace(argc, argv, &ctx);
+
+	free(argv_plus);
+	return 0;
 }

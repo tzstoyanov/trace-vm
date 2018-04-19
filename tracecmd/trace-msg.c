@@ -958,6 +958,8 @@ static int send_string(struct tracecmd_msg_handle *msg_handle,
 int tracecmd_msg_agent_parameters(struct tracecmd_msg_handle *msg_handle,
 				  int argc, char **argv)
 {
+	struct tracecmd_msg msg;
+	int ret;
 	int i;
 
 	for (i = 0; i < argc; i++) {
@@ -965,6 +967,12 @@ int tracecmd_msg_agent_parameters(struct tracecmd_msg_handle *msg_handle,
 		if (!argv[i])
 			return -1;
 	}
+
+	tracecmd_msg_init(MSG_ACK, &msg);
+	ret = tracecmd_msg_send(msg_handle->fd, &msg);
+	if (ret < 0)
+		return ret;
+
 	return 0;
 }
 

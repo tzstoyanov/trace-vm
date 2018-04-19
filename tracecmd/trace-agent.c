@@ -68,6 +68,9 @@ communicate_with_listener_virt_agent(int fd, int cpu_count)
 	if (tracecmd_msg_agent_parameters(msg_handle, argc, argv) < 0)
 		die("Failed to get parameters");
 
+	if (trace_record_agent(msg_handle, argc, argv) < 0)
+		die("Failed to record\n");
+
 	return msg_handle;
 }
 
