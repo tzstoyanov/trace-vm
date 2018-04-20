@@ -2998,6 +2998,7 @@ static void setup_guest(struct buffer_instance *instance)
 	if (fd < 0)
 		goto err;
 
+	/* Start reading the fds here */
 	ret = tracecmd_msg_collect_metadata(msg_handle, fd);
 	if (ret < 0)
 		goto err;
@@ -3016,9 +3017,6 @@ static void setup_connection(struct buffer_instance *instance)
 		msg_handle = setup_network(instance);
 	else if (instance->flags & BUFFER_FL_AGENT)
 		msg_handle = instance->msg_handle;
-	else if (instance->flags & BUFFER_FL_GUEST)
-		/* reading guests is more like being a listener */
-		return setup_guest(instance);
 	else
 		msg_handle = setup_virtio();
 
@@ -3064,7 +3062,8 @@ static int connect_to_agent(struct buffer_instance *instance)
 		free(str);
 	}
 
-	msg_handle = tracecmd_msg_handle_alloc(fd, TRACECMD_MSG_FL_SERVER);
+	msg_handle = tracecmd_msg_handle_alloc(fd, TRACECMD_MSG_FL_SERVER |
+					       TRACECMD_MSG_FL_AGENT);
 	if (!msg_handle) {
 		free(guest);
 		return -ENOMEM;
@@ -3083,6 +3082,13 @@ static int connect_to_agent(struct buffer_instance *instance)
 		return -ENOMEM;
 	}
 	ret = tracecmd_msg_get_fds(msg_handle, instance->cpu_count, agent_cpu_fds);
+	if (ret < 0) {
+		free(agent_cpu_fds);
+		tracecmd_msg_handle_close(msg_handle);
+		return ret;
+	}
+
+	tracecmd_msg_set_cpu_fds(msg_handle, agent_cpu_fds);
 
 	/* the msg_handle now points to the guest fd */
 	instance->msg_handle = msg_handle;
@@ -3098,7 +3104,7 @@ static void finish_network(struct buffer_instance *instance)
 		tracecmd_msg_send_close_msg(msg_handle);
 	tracecmd_msg_handle_close(msg_handle);
 	free(client_ports);
-	free(instance->host);
+	free(instance->host);	/* UPDATE GUEST HERE */
 }
 
 static void start_threads(enum trace_type type, int global)
@@ -3128,16 +3134,30 @@ static void start_threads(enum trace_type type, int global)
 
 	for_all_instances(instance) {
 		int x, pid;
+		int *fds = NULL;
 
 		if (instance->host ||
-		    (instance->flags & (BUFFER_FL_VIRT | BUFFER_FL_GUEST |
-					BUFFER_FL_AGENT))) {
+		    (instance->flags & (BUFFER_FL_VIRT | BUFFER_FL_AGENT))) {
 			setup_connection(instance);
 			if (!instance->msg_handle)
 				die("Failed to make connection");
+		} else if (instance->flags & BUFFER_FL_GUEST) {
+			setup_guest(instance);
+			fds = tracecmd_msg_cpu_fds(instance->msg_handle);
 		}
 
 		for (x = 0; x < instance->cpu_count; x++) {
+			/* Guest instances already have readers */
+			if (instance->flags & BUFFER_FL_GUEST) {
+				/* reading guests is more like being a listener */
+				pids[i].pid =
+					tracecmd_create_virt_reader(fds[x], x,
+							instance->msg_handle->page_size,
+							instance->name, output_file);
+				add_filter_pid(pids[i++].pid, 1);
+				continue;
+			}
+
 			if (type & TRACE_TYPE_STREAM) {
 				brass = pids[i].brass;
 				ret = pipe(brass);

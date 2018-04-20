@@ -334,6 +334,7 @@ enum tracecmd_msg_mngr_type {
 struct tracecmd_msg_handle {
 	int			fd;
 	int			pid;
+	int			page_size;
 	short			cpu_count;
 	short			version;	/* Current protocol version */
 	unsigned long		flags;
@@ -364,6 +365,8 @@ int tracecmd_msg_send_port_array(struct tracecmd_msg_handle *msg_handle,
 int tracecmd_msg_collect_metadata(struct tracecmd_msg_handle *msg_handle, int ofd);
 bool tracecmd_msg_done(struct tracecmd_msg_handle *msg_handle);
 void tracecmd_msg_set_done(struct tracecmd_msg_handle *msg_handle);
+int *tracecmd_msg_cpu_fds(struct tracecmd_msg_handle *msg_handle);
+void tracecmd_msg_set_cpu_fds(struct tracecmd_msg_handle *msg_handle, int *fds);
 enum tracecmd_msg_mngr_type
 tracecmd_msg_read_manager(struct tracecmd_msg_handle *msg_handle);
 int tracecmd_msg_get_connect(struct tracecmd_msg_handle *msg_handle,
@@ -393,7 +396,10 @@ int tracecmd_msg_get_fds(struct tracecmd_msg_handle *msg_handle,
 			 int cpu_count, int *fds);
 int tracecmd_msg_connect_to_agent(struct tracecmd_msg_handle *msg_handle, int argc,
 				  char * const *argv);
+int tracecmd_create_virt_reader(int fd, int cpu, int pagesize, const char *domain, const char *file);
 
+/* generic */
+int tracecmd_msg_wait_for_close(struct tracecmd_msg_handle *msg_handle);
 
 /* --- Plugin handling --- */
 extern struct pevent_plugin_option trace_ftrace_options[];

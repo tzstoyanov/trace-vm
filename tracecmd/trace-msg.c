@@ -98,6 +98,7 @@ unsigned int page_size;
 struct tracecmd_msg_server {
 	struct tracecmd_msg_handle handle;
 	int			done;
+	int			*cpu_fds;
 };
 
 static struct tracecmd_msg_server *
@@ -566,6 +567,20 @@ void tracecmd_msg_set_done(struct tracecmd_msg_handle *msg_handle)
 	struct tracecmd_msg_server *msg_server = make_server(msg_handle);
 
 	msg_server->done = true;
+}
+
+int *tracecmd_msg_cpu_fds(struct tracecmd_msg_handle *msg_handle)
+{
+	struct tracecmd_msg_server *msg_server = make_server(msg_handle);
+
+	return msg_server->cpu_fds;
+}
+
+void tracecmd_msg_set_cpu_fds(struct tracecmd_msg_handle *msg_handle, int *fds)
+{
+	struct tracecmd_msg_server *msg_server = make_server(msg_handle);
+
+	msg_server->cpu_fds = fds;
 }
 
 /*
@@ -1544,6 +1559,19 @@ int tracecmd_msg_collect_metadata(struct tracecmd_msg_handle *msg_handle, int of
 		} while (t);
 	} while (cmd == MSG_SENDMETA);
 
+	return 0;
+
+error:
+	error_operation_for_server(&msg);
+	return ret;
+}
+
+int tracecmd_msg_wait_for_close(struct tracecmd_msg_handle *msg_handle)
+{
+	struct tracecmd_msg msg;
+	u32 cmd;
+	int ret;
+
 	/* check the finish message of the client */
 	while (!tracecmd_msg_done(msg_handle)) {
 		ret = tracecmd_msg_recv(msg_handle->fd, &msg);
@@ -1562,7 +1590,6 @@ int tracecmd_msg_collect_metadata(struct tracecmd_msg_handle *msg_handle, int of
 			goto error;
 		}
 	}
-
 	return 0;
 
 error:

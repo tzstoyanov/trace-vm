@@ -424,6 +424,21 @@ static void fork_virt_reader(int sfd, int *pid, int cpu, int pagesize,
 	fork_reader(sfd, NULL, NULL, pid, cpu, pagesize, domain, virtpid, 0, VIRT);
 }
 
+int tracecmd_create_virt_reader(int fd, int cpu, int pagesize,
+				const char *domain, const char *file)
+{
+	char *save_output_file;
+	int pid;
+
+	save_output_file = output_file;
+
+	output_file = (char *)file;
+	fork_reader(fd, NULL, NULL, &pid, cpu, pagesize, domain, 0, 0, VIRT);
+
+	output_file = save_output_file;
+	return pid;
+}
+
 static int open_udp(const char *node, const char *port, int *pid,
 		    int cpu, int pagesize, int start_port, int use_tcp)
 {
@@ -761,6 +776,12 @@ collect_metadata_from_client(struct tracecmd_msg_handle *msg_handle,
 	} while (n > 0 && !tracecmd_msg_done(msg_handle));
 }
 
+static void collect_metadata(struct tracecmd_msg_handle *msg_handle, int ofd)
+{
+	tracecmd_msg_collect_metadata(msg_handle, ofd);
+	tracecmd_msg_wait_for_close(msg_handle);
+}
+
 static void stop_all_readers(int cpus, int *pid_array)
 {
 	int cpu;
@@ -858,7 +879,7 @@ static int process_client(struct tracecmd_msg_handle *msg_handle,
 
 	/* Now we are ready to start reading data from the client */
 	if (msg_handle->version == V2_PROTOCOL)
-		tracecmd_msg_collect_metadata(msg_handle, ofd);
+		collect_metadata(msg_handle, ofd);
 	else
 		collect_metadata_from_client(msg_handle, ofd);
 
