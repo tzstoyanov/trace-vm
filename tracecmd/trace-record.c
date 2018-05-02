@@ -519,6 +519,46 @@ static char *get_meta_data_temp_file(struct buffer_instance *instance)
 	return file;
 }
 
+static char *get_guest_file(const char *file, const char *guest)
+{
+	const char *ptr;
+	char *output;
+	int glen = strlen(guest);
+	int len = strlen(file);
+	int idx = 0;
+
+	output = malloc(len + glen + 2 /* dash and nul */);
+	if (!output)
+		return NULL;
+
+	ptr = file + (len - 1);
+	while (ptr > file && *ptr != '.')
+		ptr--;
+	if (*ptr == '.') {
+		if (ptr > file) {
+			idx = ptr - file;
+			memcpy(output, file, idx);
+			output[idx++] = '-';
+		}
+	} else {
+		idx = len;
+		memcpy(output, file, idx);
+		output[idx++] = '-';
+	}
+	memcpy(output + idx, guest, glen);
+	idx += glen;
+
+	if (*ptr == '.') {
+		len -= ptr - file;
+		memcpy(output + idx, ptr, len);
+		idx += len;
+	}
+
+	output[idx] = '\0';
+
+	return output;
+}
+
 static void put_temp_file(char *file)
 {
 	free(file);
@@ -529,9 +569,15 @@ static void delete_temp_file(struct buffer_instance *instance, int cpu)
 	const char *name = instance->name;
 	char file[PATH_MAX];
 
-	if (name)
-		snprintf(file, PATH_MAX, "%s.%s.cpu%d", output_file, name, cpu);
-	else
+	if (name) {
+		if (instance->flags & BUFFER_FL_GUEST) {
+			char *gfile = trace_get_temp_file_virt(output_file,
+							       instance->name, cpu);
+			strncpy(file, gfile, PATH_MAX);
+			put_temp_file(gfile);
+		} else
+			snprintf(file, PATH_MAX, "%s.%s.cpu%d", output_file, name, cpu);
+	} else
 		snprintf(file, PATH_MAX, "%s.cpu%d", output_file, cpu);
 	unlink(file);
 }
@@ -624,6 +670,16 @@ static void delete_thread_data(void)
 	}
 }
 
+static void tell_guests_to_stop(void)
+{
+	struct buffer_instance *instance;
+
+	for_all_instances(instance) {
+		if (instance->flags & BUFFER_FL_GUEST)
+			tracecmd_msg_send_finish(instance->msg_handle);
+	}
+}
+
 static void stop_threads(enum trace_type type)
 {
 	struct timeval tv = { 0, 0 };
@@ -633,10 +689,16 @@ static void stop_threads(enum trace_type type)
 	if (!recorder_threads)
 		return;
 
+	tell_guests_to_stop();
+
 	/* Tell all threads to finish up */
 	for (i = 0; i < recorder_threads; i++) {
 		if (pids[i].pid > 0) {
-			kill(pids[i].pid, SIGINT);
+			if (pids[i].instance &&
+			    pids[i].instance->flags & BUFFER_FL_GUEST)
+				kill(pids[i].pid, SIGUSR1);
+			else
+				kill(pids[i].pid, SIGINT);
 		}
 	}
 
@@ -3100,7 +3162,8 @@ static void finish_network(struct buffer_instance *instance)
 {
 	struct tracecmd_msg_handle *msg_handle = instance->msg_handle;
 
-	if (msg_handle->version == V2_PROTOCOL)
+	if (msg_handle->version == V2_PROTOCOL &&
+	    !(instance->flags & BUFFER_FL_GUEST))
 		tracecmd_msg_send_close_msg(msg_handle);
 	tracecmd_msg_handle_close(msg_handle);
 	free(client_ports);
@@ -3154,6 +3217,7 @@ static void start_threads(enum trace_type type, int global)
 					tracecmd_create_virt_reader(fds[x], x,
 							instance->msg_handle->page_size,
 							instance->name, output_file);
+				pids[i].instance = instance;
 				add_filter_pid(pids[i++].pid, 1);
 				continue;
 			}
@@ -3181,6 +3245,10 @@ static void start_threads(enum trace_type type, int global)
 				close(brass[1]);
 			if (pid > 0)
 				add_filter_pid(pid, 1);
+		}
+		if (instance->flags & BUFFER_FL_GUEST) {
+			free(fds);
+			tracecmd_msg_set_cpu_fds(instance->msg_handle, NULL);
 		}
 	}
 	recorder_threads = i;
@@ -3306,6 +3374,50 @@ enum {
 	DATA_FL_OFFSET		= 2,
 };
 
+static void write_guest_file(struct buffer_instance *instance)
+{
+	struct tracecmd_output *handle;
+	struct tracecmd_input *ihandle;
+	int cpu_count = instance->cpu_count;
+	char **temp_files;
+	char *file;
+	int i;
+
+	file = get_meta_data_temp_file(instance);
+	ihandle = tracecmd_alloc(file);
+	if (!ihandle)
+		die("error reading file %s", file);
+	/* make sure headers are ok */
+	if (tracecmd_read_headers(ihandle) < 0)
+		die("error reading file %s headers", file);
+	put_temp_file(file);
+
+	file = get_guest_file(output_file, instance->name);
+	handle = tracecmd_copy(ihandle, file);
+	tracecmd_close(ihandle);
+
+	if (!handle)
+		die("error writing to %s", file);
+	put_temp_file(file);
+
+	temp_files = malloc(sizeof(*temp_files) * cpu_count);
+	if (!temp_files)
+		die("Failed to allocate temp_files for %d cpus",
+		    cpu_count);
+
+	for (i = 0; i < cpu_count; i++)
+		temp_files[i] = trace_get_temp_file_virt(output_file,
+							 instance->name, i);
+
+	tracecmd_append_cpu_data(handle, cpu_count, temp_files);
+
+	for (i = 0; i < cpu_count; i++)
+		put_temp_file(temp_files[i]);
+
+	free(temp_files);
+	tracecmd_output_close(handle);
+}
+
 static void record_data(char *date2ts, int flags)
 {
 	struct tracecmd_option **buffer_options;
@@ -3317,9 +3429,11 @@ static void record_data(char *date2ts, int flags)
 	int i;
 
 	for_all_instances(instance) {
-		if (instance->msg_handle)
+		if (instance->msg_handle) {
 			finish_network(instance);
-		else
+			if (instance->flags & BUFFER_FL_GUEST)
+				write_guest_file(instance);
+	        } else
 			local = true;
 	}
 
@@ -4041,7 +4155,7 @@ void tracecmd_remove_instances(void)
 
 	for_each_instance(instance) {
 		/* Only delete what we created */
-		if (instance->flags & BUFFER_FL_KEEP)
+		if (instance->flags & (BUFFER_FL_KEEP | BUFFER_FL_GUEST))
 			continue;
 		if (instance->tracing_on_fd > 0) {
 			close(instance->tracing_on_fd);
@@ -4277,6 +4391,8 @@ static void destroy_stats(void)
 	int cpu;
 
 	for_all_instances(instance) {
+		if (instance->flags & BUFFER_FL_GUEST)
+			continue;
 		for (cpu = 0; cpu < instance->cpu_count; cpu++) {
 			trace_seq_destroy(&instance->s_save[cpu]);
 			trace_seq_destroy(&instance->s_print[cpu]);
@@ -4752,7 +4868,7 @@ static void init_common_record_context(struct common_record_context *ctx,
 static void add_argv(struct buffer_instance *instance, char *arg)
 {
 	instance->argv = realloc(instance->argv,
-				 sizeof(char *) * instance->argc + 1);
+				 sizeof(char *) * (instance->argc + 1));
 	if (!instance->argv)
 		die("Can not allocate buffer args");
 	instance->argv[instance->argc] = arg;
@@ -5326,11 +5442,7 @@ static void record_trace(int argc, char **argv,
 
 	if (ctx->run_command)
 		run_cmd(type, (argc - optind) - 1, &argv[optind + 1]);
-	else if (ctx->instance && ctx->instance->flags & BUFFER_FL_AGENT) {
-		update_task_filter();
-		tracecmd_enable_tracing();
-		/* START HERE */
-	} else {
+	else {
 		update_task_filter();
 		tracecmd_enable_tracing();
 		/* We don't ptrace ourself */
