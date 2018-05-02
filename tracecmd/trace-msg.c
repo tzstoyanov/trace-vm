@@ -1533,6 +1533,7 @@ int tracecmd_msg_collect_metadata(struct tracecmd_msg_handle *msg_handle, int of
 				warning("Connection timed out\n");
 			else
 				warning("reading client");
+			msg_free(&msg);
 			return ret;
 		}
 
@@ -1549,6 +1550,7 @@ int tracecmd_msg_collect_metadata(struct tracecmd_msg_handle *msg_handle, int of
 		do {
 			s = write(ofd, msg.buf+s, t);
 			if (s < 0) {
+				msg_free(&msg);
 				if (errno == EINTR)
 					continue;
 				warning("writing to file");
@@ -1557,6 +1559,7 @@ int tracecmd_msg_collect_metadata(struct tracecmd_msg_handle *msg_handle, int of
 			t -= s;
 			s = n - t;
 		} while (t);
+		msg_free(&msg);
 	} while (cmd == MSG_SENDMETA);
 
 	return 0;
