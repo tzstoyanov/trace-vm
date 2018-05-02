@@ -1112,7 +1112,7 @@ int tracecmd_msg_get_connect(struct tracecmd_msg_handle *msg_handle,
 	if (!agent_fifo)
 		return -EINVAL;
 
-	*cpu_fifos = calloc(msg_handle->cpu_count, sizeof(**cpu_fifos));
+	*cpu_fifos = calloc(msg_handle->cpu_count + 1, sizeof(**cpu_fifos));
 	if (!*cpu_fifos)
 		goto free;
 
@@ -1122,6 +1122,7 @@ int tracecmd_msg_get_connect(struct tracecmd_msg_handle *msg_handle,
 			goto free;
 		(*cpu_fifos)[i] = str;
 	}
+	(*cpu_fifos)[i] = NULL;
 
 	return 0;
  free:
