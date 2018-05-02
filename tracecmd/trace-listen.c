@@ -1850,7 +1850,6 @@ static int handle_manager(int cfd)
 	struct tracecmd_msg_handle *msg_handle;
 	enum tracecmd_msg_mngr_type type;
 	struct client_list *client;
-	struct manager_list *mgr;
 	char *domain;
 	char *agent_fifo;
 	char **cpu_fifos;
@@ -1873,15 +1872,13 @@ static int handle_manager(int cfd)
 		if (ret < 0)
 			break;
 
-		mgr = add_domain(domain, agent_fifo, cpu_fifos);
+		add_domain(domain, agent_fifo, cpu_fifos);
 
-		if (!mgr) {
-			free(domain);
-			free(agent_fifo);
-			for (i = 0; cpu_fifos && cpu_fifos[i]; i++)
-				free(cpu_fifos[i]);
-			free(cpu_fifos);
-		}
+		for (i = 0; cpu_fifos && cpu_fifos[i]; i++)
+			free(cpu_fifos[i]);
+		free(cpu_fifos);
+		free(domain);
+		free(agent_fifo);
 
 		break;
 	case TRACECMD_MSG_MNG_GLIST:
