@@ -174,6 +174,8 @@ tracecmd_create_buffer_recorder_fd2(int fd, int fd2, int cpu, unsigned flags,
 			goto out_free;
 
 		recorder->trace_fd = open(path, O_RDONLY);
+		free(path);
+
 		if (recorder->trace_fd < 0)
 			goto out_free;
 	}
@@ -199,8 +201,6 @@ tracecmd_create_buffer_recorder_fd2(int fd, int fd2, int cpu, unsigned flags,
 	return recorder;
 
  out_free:
-	free(path);
-
 	tracecmd_free_recorder(recorder);
 	return NULL;
 }
