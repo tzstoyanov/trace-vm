@@ -377,6 +377,7 @@ int tracecmd_msg_send_domain(struct tracecmd_msg_handle *msg_handle,
 			     char *domain, int cpus);
 int tracecmd_msg_get_domain(struct tracecmd_msg_handle *msg_handle, char **domain);
 int tracecmd_msg_send_finish(struct tracecmd_msg_handle *msg_handle);
+int tracecmd_msg_recv_finish(struct tracecmd_msg_handle *msg_handle);
 int tracecmd_msg_transfer_fd(struct tracecmd_msg_handle *msg_handle, int fd, int cpus);
 
 /* for agent */

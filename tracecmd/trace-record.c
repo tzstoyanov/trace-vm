@@ -3084,9 +3084,16 @@ static void setup_connection(struct buffer_instance *instance)
 
 	/* Now create the handle through this socket */
 	if (msg_handle->version == V2_PROTOCOL) {
-		if (!(instance->flags & BUFFER_FL_AGENT) &&
-		    tracecmd_msg_send_init_data(msg_handle, &client_ports) < 0)
-			die("Cannot communicate with server");
+		if (instance->flags & BUFFER_FL_AGENT) {
+			int cpus = instance->cpu_count;
+
+			client_ports = malloc_or_die(sizeof(int) * cpus);
+			if (tracecmd_open_virt_ports(client_ports, cpus) < 0)
+				die("Cannot connect to virt ports");
+		} else {
+			if (tracecmd_msg_send_init_data(msg_handle, &client_ports) < 0)
+				die("Cannot communicate with server");
+		}
 		network_handle = tracecmd_create_init_fd_msg(msg_handle, listed_events);
 		tracecmd_msg_finish_sending_metadata(msg_handle);
 	} else
@@ -5442,7 +5449,11 @@ static void record_trace(int argc, char **argv,
 
 	if (ctx->run_command)
 		run_cmd(type, (argc - optind) - 1, &argv[optind + 1]);
-	else {
+	else if (ctx->instance && ctx->instance->flags & BUFFER_FL_AGENT) {
+		update_task_filter();
+		tracecmd_enable_tracing();
+		tracecmd_msg_recv_finish(ctx->instance->msg_handle);
+	} else {
 		update_task_filter();
 		tracecmd_enable_tracing();
 		/* We don't ptrace ourself */

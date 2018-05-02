@@ -18,4 +18,6 @@ extern unsigned int page_size;
 void plog(const char *fmt, ...);
 void pdie(const char *fmt, ...);
 
+int tracecmd_open_virt_ports(int *ports, int cpus);
+
 #endif /* _TRACE_MSG_H_ */

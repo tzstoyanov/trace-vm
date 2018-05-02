@@ -631,13 +631,28 @@ static int tracecmd_msg_wait_for_msg(int fd, struct tracecmd_msg *msg)
 	return 0;
 }
 
+int tracecmd_open_virt_ports(int *ports, int cpus)
+{
+	char path[PATH_MAX];
+	int i;
+
+	for (i = 0; i < cpus; i++) {
+		snprintf(path, PATH_MAX, TRACE_PATH_CPU, i);
+		ports[i] = open(path, O_WRONLY);
+		if (ports[i] < 0) {
+			warning("Cannot open %s", TRACE_PATH_CPU, i);
+			return -errno;
+		}
+	}
+	return 0;
+}
+
 int tracecmd_msg_send_init_data(struct tracecmd_msg_handle *msg_handle,
 				int **array)
 {
 	struct tracecmd_msg send_msg;
 	struct tracecmd_msg recv_msg;
 	int fd = msg_handle->fd;
-	char path[PATH_MAX];
 	int *ports;
 	int i, cpus;
 	int ret;
@@ -665,16 +680,11 @@ int tracecmd_msg_send_init_data(struct tracecmd_msg_handle *msg_handle,
 	if (msg_handle->flags & TRACECMD_MSG_FL_NETWORK) {
 		for (i = 0; i < cpus; i++)
 			ports[i] = ntohl(recv_msg.port_array[i]);
-	} else if (msg_handle->flags & TRACECMD_MSG_FL_VIRT) {
+	} else if (msg_handle->flags & (TRACECMD_MSG_FL_VIRT | TRACECMD_MSG_FL_AGENT)) {
 		/* Open data paths of virtio-serial */
-		for (i = 0; i < cpus; i++) {
-			snprintf(path, PATH_MAX, TRACE_PATH_CPU, i);
-			ports[i] = open(path, O_WRONLY);
-			if (ports[i] < 0) {
-				warning("Cannot open %s", TRACE_PATH_CPU, i);
-				return -errno;
-			}
-		}
+		ret = tracecmd_open_virt_ports(ports, cpus);
+		if (ret < 0)
+			return ret;
 	} else {
 		plog("Neither virt or network specified");
 		return -EINVAL;
@@ -1159,6 +1169,20 @@ int tracecmd_msg_send_finish(struct tracecmd_msg_handle *msg_handle)
 
 	tracecmd_msg_init(MSG_FINISH, &msg);
 	return tracecmd_msg_send(fd, &msg);
+}
+
+int tracecmd_msg_recv_finish(struct tracecmd_msg_handle *msg_handle)
+{
+	struct tracecmd_msg msg;
+	int ret;
+
+	/* Wait till we reciev finish */
+	ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+	if (ret < 0)
+		return ret;
+	if (ntohl(msg.hdr.cmd) != MSG_FINISH)
+		warning("Did not receive FINISH\n");
+	return 0;
 }
 
 int tracecmd_msg_connect_guest(struct tracecmd_msg_handle *msg_handle,
