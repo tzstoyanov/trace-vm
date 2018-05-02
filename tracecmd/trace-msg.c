@@ -793,7 +793,7 @@ int tracecmd_msg_connect_to_server(struct tracecmd_msg_handle *msg_handle)
 		if (ret == -EPROTONOSUPPORT)
 			goto error;
 	}
-
+	msg_free(&recv_msg);
 	return ret;
 error:
 	tracecmd_msg_send_error(fd, &recv_msg);
@@ -937,29 +937,37 @@ static char *receive_string(struct tracecmd_msg_handle *msg_handle)
 
 	for (;;) {
 		ret = tracecmd_msg_recv_wait(fd, &msg);
-		if (ret < 0)
-			return NULL;
+		if (ret < 0) {
+			free(str);
+			str = NULL;
+			break;
+		}
 		if (ntohl(msg.hdr.cmd) == MSG_FINMETA)
 			break;
 
 		if (ntohl(msg.hdr.cmd) != MSG_SENDMETA) {
 			free(str);
-			return NULL;
+			str = NULL;
+			break;
 		}
 
 		size = ntohl(msg.data.size);
 		new = realloc(str, len + size + 1);
 		if (!new) {
 			free(str);
-			return NULL;
+			str = NULL;
+			break;
 		}
 		str = new;
 		memcpy(str + len, msg.buf, size);
 		len += size;
+		msg_free(&msg);
 	}
 
 	if (str)
 		str[len] = 0;
+
+	msg_free(&msg);
 
 	return str;
 }
