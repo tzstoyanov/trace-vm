@@ -1162,15 +1162,18 @@ static int do_connection(int cfd, struct sockaddr *peer_addr,
 
 	if (msg_handle->flags & TRACECMD_MSG_FL_AGENT) {
 		*cpu_count = msg_handle->cpu_count;
+		tracecmd_msg_handle_close(msg_handle);
 		return PID_AGENT;
 	}
 
-	if (pagesize <= 0)
+	if (pagesize <= 0) {
+		tracecmd_msg_handle_close(msg_handle);
 		return -EINVAL;
+	}
 
 	ret = do_fork();
 	if (ret) {
-		close (cfd);
+		tracecmd_msg_handle_close(msg_handle);
 		return ret;
 	}
 
