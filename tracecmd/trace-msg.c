@@ -281,6 +281,11 @@ static ssize_t write_fd(int fd, int sendfd)
 	} control_un;
 	struct cmsghdr  *cmptr;
 
+	memset(&msg, 0, sizeof(msg));
+	memset(&control_un, 0, sizeof(control_un));
+	memset(&iov, 0, sizeof(iov));
+	memset(&buf, 0, sizeof(buf));
+
 	msg.msg_control = control_un.control;
 	msg.msg_controllen = sizeof(control_un.control);
 
@@ -297,8 +302,6 @@ static ssize_t write_fd(int fd, int sendfd)
 	iov[0].iov_len = 2;
 	msg.msg_iov = iov;
 	msg.msg_iovlen = 1;
-
-	buf[0] = 0;
 
 	return sendmsg(fd, &msg, 0);
 }
