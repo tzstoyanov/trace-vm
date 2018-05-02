@@ -112,6 +112,20 @@ static char *get_temp_file_virt(const char *domain, int virtpid, int cpu)
 	return  get_temp_file(NULL, NULL, domain, virtpid, cpu, VIRT);
 }
 
+char *trace_get_temp_file_virt(const char *file, const char *domain, int cpu)
+{
+	char *save_output_file;
+	char *ret;
+
+	save_output_file = output_file;
+
+	output_file = (char *)file;
+	ret = get_temp_file_virt(domain, 0, cpu);
+
+	output_file = save_output_file;
+	return ret;
+}
+
 static void put_temp_file(char *file)
 {
 	free(file);
