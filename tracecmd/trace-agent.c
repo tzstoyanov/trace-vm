@@ -46,6 +46,7 @@ communicate_with_listener_virt_agent(int fd, int cpu_count)
 	struct tracecmd_msg_handle *msg_handle;
 	char **argv;
 	int argc;
+	int i;
 
 	msg_handle = tracecmd_msg_handle_alloc(fd,
 					TRACECMD_MSG_FL_CLIENT |
@@ -70,6 +71,10 @@ communicate_with_listener_virt_agent(int fd, int cpu_count)
 
 	if (trace_record_agent(msg_handle, argc, argv) < 0)
 		die("Failed to record\n");
+
+	for (i = 0; i < argc; i++)
+		free(argv[i]);
+	free(argv);
 
 	return msg_handle;
 }
