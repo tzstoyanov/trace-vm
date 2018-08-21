@@ -86,7 +86,7 @@ struct kshark_context {
 	struct tracecmd_input	*handle;
 
 	/** Page event used to parse the page. */
-	struct pevent		*pevent;
+	struct tep_handle	*pevent;
 
 	/** Hash table of task PIDs. */
 	struct kshark_task_list	*tasks[KS_TASK_HASH_SIZE];
