@@ -115,18 +115,18 @@ bool kshark_instance(struct kshark_context **kshark_ctx)
 	return true;
 }
 
-static void kshark_free_task_list(struct kshark_context *kshark_ctx)
+static void kshark_free_task_list(struct kshark_task_list **tasks)
 {
 	struct kshark_task_list *task;
 	int i;
 
-	if (!kshark_ctx)
+	if (!tasks)
 		return;
 
 	for (i = 0; i < KS_TASK_HASH_SIZE; ++i) {
-		while (kshark_ctx->tasks[i]) {
-			task = kshark_ctx->tasks[i];
-			kshark_ctx->tasks[i] = task->next;
+		while (tasks[i]) {
+			task = tasks[i];
+			tasks[i] = task->next;
 			free(task);
 		}
 	}
@@ -146,7 +146,7 @@ bool kshark_open(struct kshark_context *kshark_ctx, const char *file)
 {
 	struct tracecmd_input *handle;
 
-	kshark_free_task_list(kshark_ctx);
+	kshark_free_task_list(kshark_ctx->tasks);
 
 	handle = tracecmd_open(file);
 	if (!handle)
@@ -241,7 +241,7 @@ void kshark_free(struct kshark_context *kshark_ctx)
 		kshark_free_event_handler_list(kshark_ctx->event_handlers);
 	}
 
-	kshark_free_task_list(kshark_ctx);
+	kshark_free_task_list(kshark_ctx->tasks);
 
 	if (seq.buffer)
 		trace_seq_destroy(&seq);
