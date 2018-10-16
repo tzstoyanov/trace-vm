@@ -382,6 +382,33 @@ static bool kshark_show_cpu(struct kshark_context *kshark_ctx, int cpu)
 }
 
 /**
+ * @brief Get an Id Filter.
+ *
+ * @param kshark_ctx: Input location for context pointer.
+ * @param filter_id: Identifier of the filter.
+ */
+struct tracecmd_filter_id *
+kshark_get_filter(struct kshark_context *kshark_ctx, int filter_id)
+{
+	switch (filter_id) {
+	case KS_SHOW_CPU_FILTER:
+		return kshark_ctx->show_cpu_filter;
+	case KS_HIDE_CPU_FILTER:
+		return kshark_ctx->hide_cpu_filter;
+	case KS_SHOW_EVENT_FILTER:
+		return kshark_ctx->show_event_filter;
+	case KS_HIDE_EVENT_FILTER:
+		return kshark_ctx->hide_event_filter;
+	case KS_SHOW_TASK_FILTER:
+		return kshark_ctx->show_task_filter;
+	case KS_HIDE_TASK_FILTER:
+		return kshark_ctx->hide_task_filter;
+	default:
+		return NULL;
+	}
+}
+
+/**
  * @brief Add an Id value to the filster specified by "filter_id".
  *
  * @param kshark_ctx: Input location for the session context pointer.
@@ -393,30 +420,37 @@ void kshark_filter_add_id(struct kshark_context *kshark_ctx,
 {
 	struct tracecmd_filter_id *filter;
 
-	switch (filter_id) {
-		case KS_SHOW_CPU_FILTER:
-			filter = kshark_ctx->show_cpu_filter;
-			break;
-		case KS_HIDE_CPU_FILTER:
-			filter = kshark_ctx->hide_cpu_filter;
-			break;
-		case KS_SHOW_EVENT_FILTER:
-			filter = kshark_ctx->show_event_filter;
-			break;
-		case KS_HIDE_EVENT_FILTER:
-			filter = kshark_ctx->hide_event_filter;
-			break;
-		case KS_SHOW_TASK_FILTER:
-			filter = kshark_ctx->show_task_filter;
-			break;
-		case KS_HIDE_TASK_FILTER:
-			filter = kshark_ctx->hide_task_filter;
-			break;
-		default:
-			return;
+	filter = kshark_get_filter(kshark_ctx, filter_id);
+	if (filter)
+		tracecmd_filter_id_add(filter, id);
+}
+
+/**
+ * @brief Get an array containing all Ids associated with a given Id Filter.
+ *
+ * @param kshark_ctx: Input location for context pointer.
+ * @param filter_id: Identifier of the filter.
+ * @param n: Output location for the size of the returned array.
+ *
+ * @return The user is responsible for freeing the array.
+ */
+int *kshark_get_filter_ids(struct kshark_context *kshark_ctx,
+			   int filter_id, int *n)
+{
+	struct tracecmd_filter_id *filter;
+
+	filter = kshark_get_filter(kshark_ctx, filter_id);
+	if (filter) {
+		if (n)
+			*n = filter->count;
+
+		return tracecmd_filter_ids(filter);
 	}
 
-	tracecmd_filter_id_add(filter, id);
+	if (n)
+		*n = 0;
+
+	return NULL;
 }
 
 /**
@@ -429,30 +463,9 @@ void kshark_filter_clear(struct kshark_context *kshark_ctx, int filter_id)
 {
 	struct tracecmd_filter_id *filter;
 
-	switch (filter_id) {
-		case KS_SHOW_CPU_FILTER:
-			filter = kshark_ctx->show_cpu_filter;
-			break;
-		case KS_HIDE_CPU_FILTER:
-			filter = kshark_ctx->hide_cpu_filter;
-			break;
-		case KS_SHOW_EVENT_FILTER:
-			filter = kshark_ctx->show_event_filter;
-			break;
-		case KS_HIDE_EVENT_FILTER:
-			filter = kshark_ctx->hide_event_filter;
-			break;
-		case KS_SHOW_TASK_FILTER:
-			filter = kshark_ctx->show_task_filter;
-			break;
-		case KS_HIDE_TASK_FILTER:
-			filter = kshark_ctx->hide_task_filter;
-			break;
-		default:
-			return;
-	}
-
-	tracecmd_filter_id_clear(filter);
+	filter = kshark_get_filter(kshark_ctx, filter_id);
+	if (filter)
+		tracecmd_filter_id_clear(filter);
 }
 
 static bool filter_is_set(struct tracecmd_filter_id *filter)

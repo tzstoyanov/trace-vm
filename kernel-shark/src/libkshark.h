@@ -251,6 +251,9 @@ enum kshark_filter_type {
 void kshark_filter_add_id(struct kshark_context *kshark_ctx,
 			  int filter_id, int id);
 
+int *kshark_get_filter_ids(struct kshark_context *kshark_ctx,
+			   int filter_id, int *n);
+
 void kshark_filter_clear(struct kshark_context *kshark_ctx, int filter_id);
 
 bool kshark_filter_is_set(struct kshark_context *kshark_ctx);
