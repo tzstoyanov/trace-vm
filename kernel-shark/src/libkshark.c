@@ -55,6 +55,13 @@ static bool kshark_default_context(struct kshark_context **context)
 
 	*context = kshark_context_handler = kshark_ctx;
 
+	/*
+	 * Turn off function trace indent and turn on show parent
+	 * if possible.
+	 */
+	trace_util_add_option("ftrace:parent", "1");
+	trace_util_add_option("ftrace:indent", "0");
+
 	return true;
 }
 
@@ -155,13 +162,6 @@ bool kshark_open(struct kshark_context *kshark_ctx, const char *file)
 
 	kshark_ctx->advanced_event_filter =
 		tep_filter_alloc(kshark_ctx->pevent);
-
-	/*
-	 * Turn off function trace indent and turn on show parent
-	 * if possible.
-	 */
-	trace_util_add_option("ftrace:parent", "1");
-	trace_util_add_option("ftrace:indent", "0");
 
 	return true;
 }
