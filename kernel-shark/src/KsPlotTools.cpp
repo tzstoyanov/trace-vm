@@ -109,29 +109,40 @@ void Color::setRainbowColor(int n)
 ColorTable getTaskColorTable()
 {
 	struct kshark_context *kshark_ctx(nullptr);
+	int nTasks(0), i(0), pid, *pids, *streamIds;
+	std::vector<int> tempPids;
 	ColorTable colors;
-	int nTasks, pid, *pids, i(0);
 
 	if (!kshark_instance(&kshark_ctx))
 		return colors;
 
-	nTasks = kshark_get_task_pids(kshark_ctx, &pids);
-	if (!nTasks)
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		nTasks = kshark_get_task_pids(kshark_ctx, streamIds[i], &pids);
+		tempPids.insert(tempPids.end(), pids, pids + nTasks);
+		free(pids);
+	}
+
+	free(streamIds);
+
+	if (!tempPids.size())
 		return colors;
 
-	std::vector<int> temp_pids(pids, pids + nTasks);
-	std::sort(temp_pids.begin(), temp_pids.end());
+	std::sort(tempPids.begin(), tempPids.end());
 
-	free(pids);
+	/** Erase duplicates. */
+	tempPids.erase(unique(tempPids.begin(), tempPids.end()),
+		       tempPids.end());
 
-	if (temp_pids[i] == 0) {
+	nTasks = tempPids.size();
+	if (tempPids[i] == 0) {
 		/* The "Idle" process (pid = 0) will be plotted in black. */
 		colors[i++] = {};
 	}
 
 	for (; i < nTasks; ++i) {
-		pid = temp_pids[i];
-		colors[pid].setRainbowColor(i - 1);
+		pid = tempPids[i];
+		colors[pid].setRainbowColor(i);
 	}
 
 	return colors;
@@ -145,15 +156,25 @@ ColorTable getTaskColorTable()
  */
 ColorTable getCPUColorTable()
 {
-	struct kshark_context *kshark_ctx(nullptr);
+	kshark_context *kshark_ctx(nullptr);
+	int nCPUs, nCPUMax(0), *streamIds;
+	kshark_data_stream *stream;
 	ColorTable colors;
-	int nCPUs;
 
 	if (!kshark_instance(&kshark_ctx))
 		return colors;
 
-	nCPUs =  tep_get_cpus(kshark_ctx->pevent);
-	for (int i = 0; i < nCPUs; ++i)
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		stream = kshark_get_data_stream(kshark_ctx, streamIds[i]);
+		nCPUs =  tep_get_cpus(stream->pevent);
+		if (nCPUMax < nCPUs)
+			nCPUMax = nCPUs;
+	}
+
+	free(streamIds);
+
+	for (int i = 0; i < nCPUMax; ++i)
 		colors[i].setRainbowColor(i);
 
 	return colors;
@@ -758,8 +779,9 @@ void Graph::setBin(int bin, int pidF, int pidB, const Color &col, uint8_t m)
  * @brief Process a CPU Graph.
  *
  * @param cpu: The CPU core.
+ * @param sd: Data stream identifier.
  */
-void Graph::fillCPUGraph(int cpu)
+void Graph::fillCPUGraph(int sd, int cpu)
 {
 	struct kshark_entry *eFront;
 	int pidFront(0), pidBack(0);
@@ -773,6 +795,7 @@ void Graph::fillCPUGraph(int cpu)
 		eFront = nullptr;
 
 		pidFront = ksmodel_get_pid_front(_histoPtr, bin,
+							    sd,
 							    cpu,
 							    true,
 							    _collectionPtr,
@@ -782,6 +805,7 @@ void Graph::fillCPUGraph(int cpu)
 			eFront = _histoPtr->data[index];
 
 		pidBack = ksmodel_get_pid_back(_histoPtr, bin,
+							  sd,
 							  cpu,
 							  true,
 							  _collectionPtr,
@@ -789,16 +813,18 @@ void Graph::fillCPUGraph(int cpu)
 
 		pidBackNoFilter =
 			ksmodel_get_pid_back(_histoPtr, bin,
-						       cpu,
-						       false,
-						       _collectionPtr,
-						       nullptr);
+							sd,
+						        cpu,
+						        false,
+						        _collectionPtr,
+						        nullptr);
 
 		if (pidBack != pidBackNoFilter)
 			pidBack = KS_FILTERED_BIN;
 
 		visMask = 0x0;
 		if (ksmodel_cpu_visible_event_exist(_histoPtr, bin,
+							       sd,
 							       cpu,
 							       _collectionPtr,
 							       &index))
@@ -840,6 +866,7 @@ void Graph::fillCPUGraph(int cpu)
 		 */
 		pidBackNoFilter = ksmodel_get_pid_back(_histoPtr,
 						       LOWER_OVERFLOW_BIN,
+						       sd,
 						       cpu,
 						       false,
 						       _collectionPtr,
@@ -848,6 +875,7 @@ void Graph::fillCPUGraph(int cpu)
 		/* Now get the Pid back, applying filters. */
 		pidBack = ksmodel_get_pid_back(_histoPtr,
 					       LOWER_OVERFLOW_BIN,
+					       sd,
 					       cpu,
 					       true,
 					       _collectionPtr,
@@ -883,8 +911,9 @@ void Graph::fillCPUGraph(int cpu)
  * @brief Process a Task Graph.
  *
  * @param pid: The Process Id of the Task.
+ * @param sd: Data stream identifier.
  */
-void Graph::fillTaskGraph(int pid)
+void Graph::fillTaskGraph(int sd, int pid)
 {
 	int cpuFront, cpuBack(0), pidFront(0), pidBack(0), lastCpu(-1), bin(0);
 	uint8_t visMask;
@@ -937,6 +966,7 @@ void Graph::fillTaskGraph(int pid)
 			 */
 			int cpuPid = ksmodel_get_pid_back(_histoPtr,
 							  bin,
+							  sd,
 							  lastCpu,
 							  false,
 							  nullptr, // No collection
@@ -962,12 +992,14 @@ void Graph::fillTaskGraph(int pid)
 	{
 		/* Get the CPU used by this task. */
 		cpuFront = ksmodel_get_cpu_front(_histoPtr, bin,
+						 sd,
 						 pid,
 						 false,
 						 _collectionPtr,
 						 nullptr);
 
 		cpuBack = ksmodel_get_cpu_back(_histoPtr, bin,
+					       sd,
 					       pid,
 					       false,
 					       _collectionPtr,
@@ -982,6 +1014,7 @@ void Graph::fillTaskGraph(int pid)
 			 */
 			pidFront = ksmodel_get_pid_front(_histoPtr,
 							 bin,
+							 sd,
 							 cpuFront,
 							 false,
 							 _collectionPtr,
@@ -989,6 +1022,7 @@ void Graph::fillTaskGraph(int pid)
 
 			pidBack = ksmodel_get_pid_back(_histoPtr,
 						       bin,
+						       sd,
 						       cpuBack,
 						       false,
 						       _collectionPtr,
@@ -997,6 +1031,7 @@ void Graph::fillTaskGraph(int pid)
 			visMask = 0x0;
 			if (ksmodel_task_visible_event_exist(_histoPtr,
 							     bin,
+							     sd,
 							     pid,
 							     _collectionPtr,
 							     &index)) {
@@ -1019,8 +1054,9 @@ void Graph::fillTaskGraph(int pid)
 		 * No data from this Task in the very first bin. Use the Lower
 		 * Overflow Bin to retrieve the CPU used by the task (if any).
 		 */
-		cpuFront = ksmodel_get_cpu_back(_histoPtr, LOWER_OVERFLOW_BIN, pid,
-					   false, _collectionPtr, nullptr);
+		cpuFront = ksmodel_get_cpu_back(_histoPtr, LOWER_OVERFLOW_BIN,
+						sd, pid,
+						false, _collectionPtr, nullptr);
 		if (cpuFront >= 0) {
 			/*
 			 * The Lower Overflow Bin contains data from this Task.
@@ -1032,6 +1068,7 @@ void Graph::fillTaskGraph(int pid)
 
 			pidCpu0 = ksmodel_get_pid_back(_histoPtr,
 						       0,
+						       sd,
 						       cpuFront,
 						       false,
 						       _collectionPtr,
@@ -1039,11 +1076,13 @@ void Graph::fillTaskGraph(int pid)
 
 			pidCpuLOB = ksmodel_get_pid_back(_histoPtr,
 							 LOWER_OVERFLOW_BIN,
+							 sd,
 							 cpuFront,
 							 false,
 							 _collectionPtr,
 							 nullptr);
 			if (pidCpu0 < 0 && pidCpuLOB == pid) {
+
 				/*
 				 * The Task is the last one running on this
 				 * CPU. Set the Pid of the bin. In this case
