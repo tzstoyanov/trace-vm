@@ -17,7 +17,7 @@
 const char *default_file = "trace.dat";
 
 void dump_bin(struct kshark_trace_histo *histo, int bin,
-	      const char *type, int val)
+	      const char *type, int sd, int val)
 {
 	const struct kshark_entry *e_front, *e_back;
 	char *entry_str;
@@ -26,22 +26,22 @@ void dump_bin(struct kshark_trace_histo *histo, int bin,
 	printf("bin %i {\n", bin);
 	if (strcmp(type, "cpu") == 0) {
 		e_front = ksmodel_get_entry_front(histo, bin, true,
-						  kshark_match_cpu, val,
+						  kshark_match_cpu, sd, val,
 						  NULL,
 						  &i_front);
 
 		e_back = ksmodel_get_entry_back(histo, bin, true,
-						kshark_match_cpu, val,
+						kshark_match_cpu, sd, val,
 						NULL,
 						&i_back);
 	} else if (strcmp(type, "task") == 0) {
 		e_front = ksmodel_get_entry_front(histo, bin, true,
-						  kshark_match_pid, val,
+						  kshark_match_pid, sd, val,
 						  NULL,
 						  &i_front);
 
 		e_back = ksmodel_get_entry_back(histo, bin, true,
-						kshark_match_pid, val,
+						kshark_match_pid, sd, val,
 						NULL,
 						&i_back);
 	} else {
@@ -67,12 +67,13 @@ void dump_bin(struct kshark_trace_histo *histo, int bin,
 	puts("}\n");
 }
 
-void dump_histo(struct kshark_trace_histo *histo, const char *type, int val)
+void dump_histo(struct kshark_trace_histo *histo,
+		const char *type, int sd, int val)
 {
 	size_t bin;
 
 	for (bin = 0; bin < histo->n_bins; ++bin)
-		dump_bin(histo, bin, type, val);
+		dump_bin(histo, bin, type, sd, val);
 }
 
 int main(int argc, char **argv)
@@ -80,8 +81,7 @@ int main(int argc, char **argv)
 	struct kshark_context *kshark_ctx;
 	struct kshark_entry **data = NULL;
 	struct kshark_trace_histo histo;
-	size_t i, n_rows, n_tasks;
-	bool status;
+	size_t i, sd, n_rows, n_tasks;
 	int *pids;
 
 	/* Create a new kshark session. */
@@ -91,20 +91,20 @@ int main(int argc, char **argv)
 
 	/* Open a trace data file produced by trace-cmd. */
 	if (argc > 1)
-		status = kshark_open(kshark_ctx, argv[1]);
+		sd = kshark_open(kshark_ctx, argv[1]);
 	else
-		status = kshark_open(kshark_ctx, default_file);
+		sd = kshark_open(kshark_ctx, default_file);
 
-	if (!status) {
+	if (sd < 0) {
 		kshark_free(kshark_ctx);
 		return 1;
 	}
 
 	/* Load the content of the file into an array of entries. */
-	n_rows = kshark_load_data_entries(kshark_ctx, &data);
+	n_rows = kshark_load_data_entries(kshark_ctx, sd, &data);
 
 	/* Get a list of all tasks. */
-	n_tasks = kshark_get_task_pids(kshark_ctx, &pids);
+	n_tasks = kshark_get_task_pids(kshark_ctx, sd, &pids);
 
 	/* Initialize the Visualization Model. */
 	ksmodel_init(&histo);
@@ -115,7 +115,7 @@ int main(int argc, char **argv)
 	ksmodel_fill(&histo, data, n_rows);
 
 	/* Dump the raw bins. */
-	dump_histo(&histo, "", 0);
+	dump_histo(&histo, "", sd, 0);
 
 	puts("\n...\n\n");
 
@@ -123,13 +123,13 @@ int main(int argc, char **argv)
 	 * Change the state of the model. Do 50% Zoom-In and dump only CPU 0.
 	 */
 	ksmodel_zoom_in(&histo, .50, -1);
-	dump_histo(&histo, "cpu", 0);
+	dump_histo(&histo, "cpu", sd, 0);
 
 	puts("\n...\n\n");
 
 	/* Shift forward by two bins and this time dump only CPU 1. */
 	ksmodel_shift_forward(&histo, 2);
-	dump_histo(&histo, "cpu", 1);
+	dump_histo(&histo, "cpu", sd, 1);
 
 	puts("\n...\n\n");
 
@@ -138,7 +138,7 @@ int main(int argc, char **argv)
 	 * Task.
 	 */
 	ksmodel_zoom_out(&histo, .10, N_BINS - 1);
-	dump_histo(&histo, "task", pids[n_tasks - 1]);
+	dump_histo(&histo, "task", sd, pids[n_tasks - 1]);
 
 	/* Reset (clear) the model. */
 	ksmodel_clear(&histo);
@@ -150,7 +150,7 @@ int main(int argc, char **argv)
 	free(data);
 
 	/* Close the file. */
-	kshark_close(kshark_ctx);
+	kshark_close(kshark_ctx, sd);
 
 	/* Close the session. */
 	kshark_free(kshark_ctx);
