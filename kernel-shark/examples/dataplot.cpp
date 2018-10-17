@@ -34,12 +34,12 @@ int stream_id;
 void usage(const char *prog)
 {
 	cout << "Usage: " << prog << endl;
-	cout << "  -h	Display this help message\n";
+	cout << "  -h	Display this help message.\n";
 	cout << "  -s	Draw shapes. This demonstrates how to draw simple "
 	     << "geom. shapes.\n";
 	cout << "  -i	<file>	Input file and draw animated graphs.\n";
 	cout << "  No args.	Import " << default_file
-	     << "and draw animated graphs.\n";
+	     << " and draw animated graphs.\n";
 }
 
 /* An example function drawing something. */
