@@ -15,13 +15,13 @@ const char *default_file = "trace.dat";
 
 int main(int argc, char **argv)
 {
-	size_t i, n_rows, n_tasks, n_evts, count;
+	size_t i, sd, n_rows, n_tasks, n_evts, count;
 	struct kshark_context *kshark_ctx;
+	struct kshark_data_stream *stream;
 	struct kshark_entry **data = NULL;
 	struct tep_event_filter *adv_filter;
 	struct tep_event *event;
 	char *entry_str;
-	bool status;
 	int *pids;
 
 	/* Create a new kshark session. */
@@ -31,28 +31,30 @@ int main(int argc, char **argv)
 
 	/* Open a trace data file produced by trace-cmd. */
 	if (argc > 1)
-		status = kshark_open(kshark_ctx, argv[1]);
+		sd = kshark_open(kshark_ctx, argv[1]);
 	else
-		status = kshark_open(kshark_ctx, default_file);
+		sd = kshark_open(kshark_ctx, default_file);
 
-	if (!status) {
+	if (sd < 0) {
 		kshark_free(kshark_ctx);
 		return 1;
 	}
 
 	/* Load the content of the file into an array of entries. */
-	n_rows = kshark_load_data_entries(kshark_ctx, &data);
+	n_rows = kshark_load_data_entries(kshark_ctx, sd, &data);
 
 	/* Filter the trace data coming from trace-cmd. */
-	n_tasks = kshark_get_task_pids(kshark_ctx, &pids);
+	n_tasks = kshark_get_task_pids(kshark_ctx, sd, &pids);
+	stream = kshark_get_data_stream(kshark_ctx, sd);
 	for (i = 0; i < n_tasks; ++i) {
 		const char *task_str =
-			tep_data_comm_from_pid(kshark_ctx->pevent,
+			tep_data_comm_from_pid(stream->pevent,
 					       pids[i]);
 
 		if (strcmp(task_str, "trace-cmd") == 0)
-			kshark_filter_add_id(kshark_ctx, KS_HIDE_TASK_FILTER,
-							 pids[i]);
+			kshark_filter_add_id(kshark_ctx, sd,
+					     KS_HIDE_TASK_FILTER,
+					     pids[i]);
 	}
 
 	free(pids);
@@ -62,7 +64,7 @@ int main(int argc, char **argv)
 	 * filterd entris in text format.
 	 */
 	kshark_ctx->filter_mask = KS_TEXT_VIEW_FILTER_MASK;
-	kshark_filter_entries(kshark_ctx, data, n_rows);
+	kshark_filter_entries(kshark_ctx, sd, data, n_rows);
 
 	/* Print to the screen the first 10 visible entries. */
 	count = 0;
@@ -83,15 +85,16 @@ int main(int argc, char **argv)
 	puts("\n\n");
 
 	/* Show only "sched" events. */
-	n_evts = tep_get_events_count(kshark_ctx->pevent);
+	n_evts = tep_get_events_count(stream->pevent);
 	for (i = 0; i < n_evts; ++i) {
-		event = tep_get_event(kshark_ctx->pevent, i);
+		event = tep_get_event(stream->pevent, i);
 		if (strcmp(event->system, "sched") == 0)
-			kshark_filter_add_id(kshark_ctx, KS_SHOW_EVENT_FILTER,
-							 event->id);
+			kshark_filter_add_id(kshark_ctx, sd,
+					     KS_SHOW_EVENT_FILTER,
+					     event->id);
 	}
 
-	kshark_filter_entries(kshark_ctx, data, n_rows);
+	kshark_filter_entries(kshark_ctx, sd, data, n_rows);
 
 	/* Print to the screen the first 10 visible entries. */
 	count = 0;
@@ -112,11 +115,11 @@ int main(int argc, char **argv)
 	puts("\n\n");
 
 	/* Clear all filters. */
-	kshark_filter_clear(kshark_ctx, KS_HIDE_TASK_FILTER);
-	kshark_filter_clear(kshark_ctx, KS_SHOW_EVENT_FILTER);
+	kshark_filter_clear(kshark_ctx, sd, KS_HIDE_TASK_FILTER);
+	kshark_filter_clear(kshark_ctx, sd, KS_SHOW_EVENT_FILTER);
 
 	/* Use the Advanced filter to do event content based filtering. */
-	adv_filter = kshark_ctx->advanced_event_filter;
+	adv_filter = stream->advanced_event_filter;
 	tep_filter_add_filter_str(adv_filter,
 				  "sched/sched_wakeup:target_cpu==1");
 
@@ -124,7 +127,7 @@ int main(int argc, char **argv)
 	for (i = 0; i < n_rows; ++i)
 		free(data[i]);
 
-	n_rows = kshark_load_data_entries(kshark_ctx, &data);
+	n_rows = kshark_load_data_entries(kshark_ctx, sd, &data);
 
 	count = 0;
 	for (i = 0; i < n_rows; ++i) {
@@ -145,7 +148,7 @@ int main(int argc, char **argv)
 	free(data);
 
 	/* Close the file. */
-	kshark_close(kshark_ctx);
+	kshark_close(kshark_ctx, sd);
 
 	/* Close the session. */
 	kshark_free(kshark_ctx);
