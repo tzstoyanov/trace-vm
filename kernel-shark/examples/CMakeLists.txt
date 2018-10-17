@@ -23,3 +23,7 @@ target_link_libraries(confio   kshark)
 # message(STATUS "widgetdemo")
 # add_executable(widgetdemo          widgetdemo.cpp)
 # target_link_libraries(widgetdemo   kshark-gui)
+
+message(STATUS "multiload")
+add_executable(mload          multiload.c)
+target_link_libraries(mload   kshark)
