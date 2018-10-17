@@ -332,7 +332,7 @@ bool kshark_config_doc_get(struct kshark_config_doc *conf,
 	return true;
 
  fail:
-	fprintf(stderr, "Failed to get config. document.\n");
+	fprintf(stderr, "Failed to get config. document [%s]>.\n", key);
 	return false;
 }
 
@@ -347,6 +347,19 @@ struct kshark_config_doc *
 kshark_record_config_new(enum kshark_config_formats format)
 {
 	return kshark_config_new("kshark.config.record", format);
+}
+
+/**
+ * @brief Create an empty Data Stream Configuration document. The type
+ * 	  description is set to "kshark.config.stream".
+ *
+ * @returns kshark_config_doc instance on success, otherwise NULL. Use
+ *	    kshark_free_config_doc() to free the object.
+ */
+struct kshark_config_doc *
+kshark_stream_config_new(enum kshark_config_formats format)
+{
+	return kshark_config_new("kshark.config.stream", format);
 }
 
 /**
@@ -424,6 +437,7 @@ static bool kshark_trace_file_to_json(const char *file,
 				      struct json_object *jobj)
 {
 	struct json_object *jfile_name, *jtime;
+	char abs_path[FILENAME_MAX];
 	struct stat st;
 
 	if (!file || !jobj)
@@ -434,7 +448,13 @@ static bool kshark_trace_file_to_json(const char *file,
 		return false;
 	}
 
-	jfile_name = json_object_new_string(file);
+	if (!realpath(file, abs_path)) {
+		fprintf(stderr, "Unable to get absolute pathname for %s\n",
+			file);
+		return false;
+	}
+
+	jfile_name = json_object_new_string(abs_path);
 	jtime = json_object_new_int64(st.st_mtime);
 
 	if (!jfile_name || !jtime)
@@ -533,27 +553,29 @@ static bool kshark_trace_file_from_json(const char **file,
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported.
  *
- * @returns The name of the file on success, otherwise NULL. "conf" has
- *	    the ownership over the returned string.
+ * @returns The Id number of the data stream associated with the loaded file on
+ *	    success, otherwise -1. "conf" has the ownership over the returned
+ *	    string.
  */
-const char* kshark_import_trace_file(struct kshark_context *kshark_ctx,
-				     struct kshark_config_doc *conf)
+int kshark_import_trace_file(struct kshark_context *kshark_ctx,
+			     struct kshark_config_doc *conf)
 {
 	const char *file = NULL;
+	int sd = -1;
 	switch (conf->format) {
 	case KS_CONFIG_JSON:
 		if (kshark_trace_file_from_json(&file, conf->conf_doc))
-			kshark_open(kshark_ctx, file);
+			sd = kshark_open(kshark_ctx, file);
 
 		break;
 
 	default:
 		fprintf(stderr, "Document format %d not supported\n",
 			conf->format);
-		return NULL;
+		break;
 	}
 
-	return file;
+	return sd;
 }
 
 static bool kshark_model_to_json(struct kshark_trace_histo *histo,
@@ -1014,10 +1036,10 @@ bool kshark_import_filter_array(struct tracecmd_filter_id *filter,
 	}
 }
 
-static bool kshark_adv_filters_to_json(struct kshark_context *kshark_ctx,
+static bool kshark_adv_filters_to_json(struct kshark_data_stream *stream,
 				       struct json_object *jobj)
 {
-	struct tep_event_filter *adv_filter = kshark_ctx->advanced_event_filter;
+	struct tep_event_filter *adv_filter = stream->advanced_event_filter;
 	json_object *jfilter_data, *jevent, *jsystem, *jname, *jfilter;
 	struct tep_event **events;
 	char *str;
@@ -1031,8 +1053,7 @@ static bool kshark_adv_filters_to_json(struct kshark_context *kshark_ctx,
 	 */
 	json_del_if_exist(jobj, KS_ADV_EVENT_FILTER_NAME);
 
-	if (!kshark_ctx->advanced_event_filter ||
-	    !kshark_ctx->advanced_event_filter->filters)
+	if (!adv_filter || !adv_filter->filters)
 		return true;
 
 	/* Create a Json array and fill the Id values into it. */
@@ -1040,7 +1061,7 @@ static bool kshark_adv_filters_to_json(struct kshark_context *kshark_ctx,
 	if (!jfilter_data)
 		goto fail;
 
-	events = tep_list_events(kshark_ctx->pevent, TEP_EVENT_SORT_SYSTEM);
+	events = tep_list_events(stream->pevent, TEP_EVENT_SORT_SYSTEM);
 	if (!events)
 		return false;
 
@@ -1085,15 +1106,22 @@ static bool kshark_adv_filters_to_json(struct kshark_context *kshark_ctx,
  *	  Configuration document.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported. If NULL, a new Adv. Filter
  *		Configuration document will be created.
  *
  * @returns True on success, otherwise False.
  */
-bool kshark_export_adv_filters(struct kshark_context *kshark_ctx,
+bool kshark_export_adv_filters(struct kshark_context *kshark_ctx, int sd,
 			       struct kshark_config_doc **conf)
 {
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
+
+	if (!stream)
+		return false;
+
 	if (!*conf)
 		*conf = kshark_filter_config_new(KS_CONFIG_JSON);
 
@@ -1102,7 +1130,7 @@ bool kshark_export_adv_filters(struct kshark_context *kshark_ctx,
 
 	switch ((*conf)->format) {
 	case KS_CONFIG_JSON:
-		return kshark_adv_filters_to_json(kshark_ctx,
+		return kshark_adv_filters_to_json(stream,
 						  (*conf)->conf_doc);
 
 	default:
@@ -1112,10 +1140,11 @@ bool kshark_export_adv_filters(struct kshark_context *kshark_ctx,
 	}
 }
 
-static bool kshark_adv_filters_from_json(struct kshark_context *kshark_ctx,
+
+static bool kshark_adv_filters_from_json(struct kshark_data_stream *stream,
 					 struct json_object *jobj)
 {
-	struct tep_event_filter *adv_filter = kshark_ctx->advanced_event_filter;
+	struct tep_event_filter *adv_filter = stream->advanced_event_filter;
 	json_object *jfilter, *jsystem, *jname, *jcond;
 	int i, length, n, ret = 0;
 	char *filter_str = NULL;
@@ -1166,7 +1195,7 @@ static bool kshark_adv_filters_from_json(struct kshark_context *kshark_ctx,
 	if (ret < 0) {
 		char error_str[200];
 		int error_status =
-			tep_strerror(kshark_ctx->pevent, ret, error_str,
+			tep_strerror(stream->pevent, ret, error_str,
 				     sizeof(error_str));
 
 		if (error_status == 0)
@@ -1183,6 +1212,7 @@ static bool kshark_adv_filters_from_json(struct kshark_context *kshark_ctx,
  *	  filter.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported.
  *
@@ -1190,12 +1220,18 @@ static bool kshark_adv_filters_from_json(struct kshark_context *kshark_ctx,
  *	    document contains no data for the Adv. filter or in a case of
  *	    an error, the function returns False.
  */
-bool kshark_import_adv_filters(struct kshark_context *kshark_ctx,
+bool kshark_import_adv_filters(struct kshark_context *kshark_ctx, int sd,
 			       struct kshark_config_doc *conf)
 {
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
+
+	if (!stream)
+		return false;
+
 	switch (conf->format) {
 	case KS_CONFIG_JSON:
-		return kshark_adv_filters_from_json(kshark_ctx,
+		return kshark_adv_filters_from_json(stream,
 						    conf->conf_doc);
 
 	default:
@@ -1208,8 +1244,10 @@ bool kshark_import_adv_filters(struct kshark_context *kshark_ctx,
 static bool kshark_user_mask_to_json(struct kshark_context *kshark_ctx,
 				     struct json_object *jobj)
 {
-	uint8_t mask = kshark_ctx->filter_mask;
 	json_object *jmask;
+	uint8_t mask;
+	
+	mask = kshark_ctx->filter_mask;
 
 	jmask = json_object_new_int((int) mask);
 	if (!jmask)
@@ -1242,8 +1280,7 @@ bool kshark_export_user_mask(struct kshark_context *kshark_ctx,
 
 	switch ((*conf)->format) {
 	case KS_CONFIG_JSON:
-		return kshark_user_mask_to_json(kshark_ctx,
-						(*conf)->conf_doc);
+		return kshark_user_mask_to_json(kshark_ctx, (*conf)->conf_doc);
 
 	default:
 		fprintf(stderr, "Document format %d not supported\n",
@@ -1292,12 +1329,78 @@ bool kshark_import_user_mask(struct kshark_context *kshark_ctx,
 {
 	switch (conf->format) {
 	case KS_CONFIG_JSON:
-		return kshark_user_mask_from_json(kshark_ctx,
-						  conf->conf_doc);
+		return kshark_user_mask_from_json(kshark_ctx, conf->conf_doc);
 
 	default:
 		fprintf(stderr, "Document format %d not supported\n",
 			conf->format);
+		return false;
+	}
+}
+
+static bool kshark_calib_array_to_json(struct kshark_context *kshark_ctx,
+				       int sd, struct json_object *jobj)
+{
+	json_object *jval = NULL, *jcalib = NULL;
+	struct kshark_data_stream *stream;
+
+	stream = kshark_get_data_stream(kshark_ctx, sd);
+	if (!stream || !stream->calib_array_size)
+		goto fail;
+
+	jcalib = json_object_new_array();
+	if (!jcalib)
+		goto fail;
+
+	for (size_t i = 0; i < stream->calib_array_size; ++i) {
+		jval = json_object_new_int64(stream->calib_array[i]);
+		if (!jval)
+			goto fail;
+
+		json_object_array_add(jcalib, jval);
+	}
+
+	/* Add the mask to the filter config document. */
+	json_object_object_add(jobj, "calib. array", jcalib);
+
+	return true;
+
+ fail:
+	json_object_put(jval);
+	json_object_put(jcalib);
+
+	return false;
+}
+
+/**
+ * @brief Record the current values of the time calibration constants into
+ *	  a Configuration document.
+ *
+ * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
+ * @param conf: Input location for the kshark_config_doc instance. Currently
+ *		only Json format is supported. If NULL, a new Configuration
+ *		document will be created.
+ *
+ * @returns True on success, otherwise False.
+ */
+bool kshark_export_calib_array(struct kshark_context *kshark_ctx, int sd,
+			       struct kshark_config_doc **conf)
+{
+	if (!*conf)
+		*conf = kshark_filter_config_new(KS_CONFIG_JSON);
+
+	if (!*conf)
+		return false;
+
+	switch ((*conf)->format) {
+	case KS_CONFIG_JSON:
+		return kshark_calib_array_to_json(kshark_ctx, sd,
+						  (*conf)->conf_doc);
+
+	default:
+		fprintf(stderr, "Document format %d not supported\n",
+			(*conf)->format);
 		return false;
 	}
 }
@@ -1312,6 +1415,7 @@ static bool filter_is_set(struct tracecmd_filter_id *filter)
  *	  filters into a Json document.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported. If NULL, a new Filter
  *		Configuration document will be created.
@@ -1319,10 +1423,15 @@ static bool filter_is_set(struct tracecmd_filter_id *filter)
  * @returns True, if a filter has been recorded. If both filters contain
  *	    no Id values or in a case of an error, the function returns False.
  */
-bool kshark_export_all_event_filters(struct kshark_context *kshark_ctx,
+bool kshark_export_all_event_filters(struct kshark_context *kshark_ctx, int sd,
 				     struct kshark_config_doc **conf)
 {
-	bool ret = true;
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
+	bool ret;
+
+	if (!stream)
+		return false;
 
 	if (!*conf)
 		*conf = kshark_filter_config_new(KS_CONFIG_JSON);
@@ -1331,15 +1440,16 @@ bool kshark_export_all_event_filters(struct kshark_context *kshark_ctx,
 		return false;
 
 	/* Save a filter only if it contains Id values. */
-	if (filter_is_set(kshark_ctx->show_event_filter))
-		ret &= kshark_export_event_filter(kshark_ctx->pevent,
-						  kshark_ctx->show_event_filter,
+	ret = true;
+	if (filter_is_set(stream->show_event_filter))
+		ret &= kshark_export_event_filter(stream->pevent,
+						  stream->show_event_filter,
 						  KS_SHOW_EVENT_FILTER_NAME,
 						  *conf);
 
-	if (filter_is_set(kshark_ctx->hide_event_filter))
-		ret &= kshark_export_event_filter(kshark_ctx->pevent,
-						  kshark_ctx->hide_event_filter,
+	if (filter_is_set(stream->hide_event_filter))
+		ret &= kshark_export_event_filter(stream->pevent,
+						  stream->hide_event_filter,
 						  KS_HIDE_EVENT_FILTER_NAME,
 						  *conf);
 
@@ -1351,6 +1461,7 @@ bool kshark_export_all_event_filters(struct kshark_context *kshark_ctx,
  *	  filters into a Configuration document.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported. If NULL, a new Filter
  *		Configuration document will be created.
@@ -1358,10 +1469,15 @@ bool kshark_export_all_event_filters(struct kshark_context *kshark_ctx,
  * @returns True, if a filter has been recorded. If both filters contain
  *	    no Id values or in a case of an error, the function returns False.
  */
-bool kshark_export_all_task_filters(struct kshark_context *kshark_ctx,
+bool kshark_export_all_task_filters(struct kshark_context *kshark_ctx, int sd,
 				    struct kshark_config_doc **conf)
 {
-	bool ret = true;
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
+	bool ret;
+
+	if (!stream)
+		return false;
 
 	if (!*conf)
 		*conf = kshark_filter_config_new(KS_CONFIG_JSON);
@@ -1370,25 +1486,26 @@ bool kshark_export_all_task_filters(struct kshark_context *kshark_ctx,
 		return false;
 
 	/* Save a filter only if it contains Id values. */
-	if (filter_is_set(kshark_ctx->show_task_filter))
-		ret &= kshark_export_filter_array(kshark_ctx->show_task_filter,
+	ret = true;
+	if (filter_is_set(stream->show_task_filter))
+		ret &= kshark_import_filter_array(stream->show_task_filter,
 						  KS_SHOW_TASK_FILTER_NAME,
 						  *conf);
 
-	if (filter_is_set(kshark_ctx->hide_task_filter))
-		ret &= kshark_export_filter_array(kshark_ctx->hide_task_filter,
+	if (filter_is_set(stream->hide_task_filter))
+		ret &= kshark_import_filter_array(stream->hide_task_filter,
 						  KS_HIDE_TASK_FILTER_NAME,
 						  *conf);
 
 	return ret;
 }
 
-
 /**
  * @brief Record the current configuration of "show cpu" and "hide cpu"
  *	  filters into a Configuration document.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported. If NULL, a new Filter
  *		Configuration document will be created.
@@ -1396,10 +1513,15 @@ bool kshark_export_all_task_filters(struct kshark_context *kshark_ctx,
  * @returns True, if a filter has been recorded. If both filters contain
  *	    no Id values or in a case of an error, the function returns False.
  */
-bool kshark_export_all_cpu_filters(struct kshark_context *kshark_ctx,
+bool kshark_export_all_cpu_filters(struct kshark_context *kshark_ctx, int sd,
 				   struct kshark_config_doc **conf)
 {
-	bool ret = true;
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
+	bool ret;
+
+	if (!stream)
+		return false;
 
 	if (!*conf)
 		*conf = kshark_filter_config_new(KS_CONFIG_JSON);
@@ -1408,13 +1530,14 @@ bool kshark_export_all_cpu_filters(struct kshark_context *kshark_ctx,
 		return false;
 
 	/* Save a filter only if it contains Id values. */
-	if (filter_is_set(kshark_ctx->show_task_filter))
-		ret &= kshark_export_filter_array(kshark_ctx->show_cpu_filter,
+	ret = true;
+	if (filter_is_set(stream->show_cpu_filter))
+		ret &= kshark_export_filter_array(stream->show_cpu_filter,
 						  KS_SHOW_CPU_FILTER_NAME,
 						  *conf);
 
-	if (filter_is_set(kshark_ctx->hide_task_filter))
-		ret &= kshark_export_filter_array(kshark_ctx->hide_cpu_filter,
+	if (filter_is_set(stream->hide_cpu_filter))
+		ret &= kshark_export_filter_array(stream->hide_cpu_filter,
 						  KS_HIDE_CPU_FILTER_NAME,
 						  *conf);
 
@@ -1426,6 +1549,7 @@ bool kshark_export_all_cpu_filters(struct kshark_context *kshark_ctx,
  *	  and "hide event" filters.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported.
  *
@@ -1433,18 +1557,23 @@ bool kshark_export_all_cpu_filters(struct kshark_context *kshark_ctx,
  *	    document contains no data for any event filter or in a case
  *	    of an error, the function returns False.
  */
-bool kshark_import_all_event_filters(struct kshark_context *kshark_ctx,
+bool kshark_import_all_event_filters(struct kshark_context *kshark_ctx, int sd,
 				     struct kshark_config_doc *conf)
 {
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
 	bool ret = false;
 
-	ret |= kshark_import_event_filter(kshark_ctx->pevent,
-					  kshark_ctx->hide_event_filter,
+	if (!stream)
+		return false;
+
+	ret |= kshark_import_event_filter(stream->pevent,
+					  stream->hide_event_filter,
 					  KS_HIDE_EVENT_FILTER_NAME,
 					  conf);
 
-	ret |= kshark_import_event_filter(kshark_ctx->pevent,
-					  kshark_ctx->show_event_filter,
+	ret |= kshark_import_event_filter(stream->pevent,
+					  stream->show_event_filter,
 					  KS_SHOW_EVENT_FILTER_NAME,
 					  conf);
 
@@ -1456,6 +1585,7 @@ bool kshark_import_all_event_filters(struct kshark_context *kshark_ctx,
  *	  and "hide task" filters.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported.
  *
@@ -1463,16 +1593,21 @@ bool kshark_import_all_event_filters(struct kshark_context *kshark_ctx,
  *	    document contains no data for any task filter or in a case of an
  *	    error, the function returns False.
  */
-bool kshark_import_all_task_filters(struct kshark_context *kshark_ctx,
+bool kshark_import_all_task_filters(struct kshark_context *kshark_ctx, int sd,
 				    struct kshark_config_doc *conf)
 {
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
 	bool ret = false;
 
-	ret |= kshark_import_filter_array(kshark_ctx->hide_task_filter,
+	if (!stream)
+		return false;
+
+	ret |= kshark_import_filter_array(stream->hide_task_filter,
 					  KS_HIDE_TASK_FILTER_NAME,
 					  conf);
 
-	ret |= kshark_import_filter_array(kshark_ctx->show_task_filter,
+	ret |= kshark_import_filter_array(stream->show_task_filter,
 					  KS_SHOW_TASK_FILTER_NAME,
 					  conf);
 
@@ -1484,6 +1619,7 @@ bool kshark_import_all_task_filters(struct kshark_context *kshark_ctx,
  *	  and "hide cpu" filters.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported.
  *
@@ -1491,16 +1627,21 @@ bool kshark_import_all_task_filters(struct kshark_context *kshark_ctx,
  *	    document contains no data for any cpu filter or in a case of an
  *	    error, the function returns False.
  */
-bool kshark_import_all_cpu_filters(struct kshark_context *kshark_ctx,
+bool kshark_import_all_cpu_filters(struct kshark_context *kshark_ctx, int sd,
 				    struct kshark_config_doc *conf)
 {
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
 	bool ret = false;
 
-	ret |= kshark_import_filter_array(kshark_ctx->hide_cpu_filter,
+	if (!stream)
+		return false;
+
+	ret |= kshark_import_filter_array(stream->hide_cpu_filter,
 					  KS_HIDE_CPU_FILTER_NAME,
 					  conf);
 
-	ret |= kshark_import_filter_array(kshark_ctx->show_cpu_filter,
+	ret |= kshark_import_filter_array(stream->show_cpu_filter,
 					  KS_SHOW_CPU_FILTER_NAME,
 					  conf);
 
@@ -1512,6 +1653,7 @@ bool kshark_import_all_cpu_filters(struct kshark_context *kshark_ctx,
  *	  configuration of all filters.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param format: Input location for the kshark_config_doc instance. Currently
  *		  only Json format is supported.
  *
@@ -1519,7 +1661,7 @@ bool kshark_import_all_cpu_filters(struct kshark_context *kshark_ctx,
  *	    kshark_free_config_doc() to free the object.
  */
 struct kshark_config_doc *
-kshark_export_all_filters(struct kshark_context *kshark_ctx,
+kshark_export_all_filters(struct kshark_context *kshark_ctx, int sd,
 			  enum kshark_config_formats format)
 {
 	/*  Create a new Configuration document. */
@@ -1528,11 +1670,11 @@ kshark_export_all_filters(struct kshark_context *kshark_ctx,
 
 	/* Save a filter only if it contains Id values. */
 	if (!conf ||
-	    !kshark_export_all_event_filters(kshark_ctx, &conf) ||
-	    !kshark_export_all_task_filters(kshark_ctx, &conf) ||
-	    !kshark_export_all_cpu_filters(kshark_ctx, &conf) ||
+	    !kshark_export_all_event_filters(kshark_ctx, sd, &conf) ||
+	    !kshark_export_all_task_filters(kshark_ctx, sd, &conf) ||
+	    !kshark_export_all_cpu_filters(kshark_ctx, sd, &conf) ||
 	    !kshark_export_user_mask(kshark_ctx, &conf) ||
-	    !kshark_export_adv_filters(kshark_ctx, &conf)) {
+	    !kshark_export_adv_filters(kshark_ctx, sd, &conf)) {
 		kshark_free_config_doc(conf);
 		return NULL;
 	}
@@ -1544,6 +1686,7 @@ kshark_export_all_filters(struct kshark_context *kshark_ctx,
  * @brief Load from a Configuration document the configuration of all filters.
  *
  * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
  * @param conf: Input location for the kshark_config_doc instance. Currently
  *		only Json format is supported.
  *
@@ -1551,17 +1694,284 @@ kshark_export_all_filters(struct kshark_context *kshark_ctx,
  *	    document contains no data for any filter or in a case of an error,
  *	    the function returns False.
  */
-bool kshark_import_all_filters(struct kshark_context *kshark_ctx,
+bool kshark_import_all_filters(struct kshark_context *kshark_ctx, int sd,
 			       struct kshark_config_doc *conf)
 {
 	bool ret;
-	ret = kshark_import_all_task_filters(kshark_ctx, conf);
-	ret |= kshark_import_all_cpu_filters(kshark_ctx, conf);
-	ret |= kshark_import_all_event_filters(kshark_ctx, conf);
+
+	ret = kshark_import_all_task_filters(kshark_ctx, sd, conf);
+	ret |= kshark_import_all_cpu_filters(kshark_ctx, sd, conf);
+	ret |= kshark_import_all_event_filters(kshark_ctx, sd, conf);
 	ret |= kshark_import_user_mask(kshark_ctx, conf);
-	ret |= kshark_import_adv_filters(kshark_ctx, conf);
+	ret |= kshark_import_adv_filters(kshark_ctx, sd, conf);
 
 	return ret;
+}
+
+/**
+ * @brief Create a Data Stream Configuration document containing.
+ *
+ * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
+ * @param format: Input location for the kshark_config_doc instance. Currently
+ *		  only Json format is supported.
+ *
+ * @returns kshark_config_doc instance on success, otherwise NULL. Use
+ *	    kshark_free_config_doc() to free the object.
+ */
+struct kshark_config_doc *
+kshark_export_dstream(struct kshark_context *kshark_ctx, int sd,
+		      enum kshark_config_formats format)
+{
+	struct kshark_data_stream *stream =
+		kshark_get_data_stream(kshark_ctx, sd);
+	struct kshark_config_doc *file_conf, *filter_conf, *sd_conf;
+	struct kshark_config_doc *dstream_conf;
+	char *sd_str;
+	int ret;
+
+	/*  Create new Configuration documents. */
+	dstream_conf = kshark_stream_config_new(format);
+	sd_conf = kshark_string_config_alloc();
+
+	ret = asprintf(&sd_str, "%i", sd);
+	sd_conf->conf_doc = sd_str;
+
+	filter_conf = kshark_export_all_filters(kshark_ctx, sd, format);
+	file_conf = kshark_export_trace_file(stream->file, format);
+
+	if (!sd_conf || ret <= 0 || !dstream_conf || !filter_conf || !file_conf)
+		goto fail;
+
+	kshark_config_doc_add(dstream_conf, "stream id", sd_conf);
+	kshark_config_doc_add(dstream_conf, "data", file_conf);
+	kshark_config_doc_add(dstream_conf, "filters", filter_conf);
+
+	if (stream->calib_array_size)
+		kshark_export_calib_array(kshark_ctx, sd, &dstream_conf);
+
+	return dstream_conf;
+
+ fail:
+	free(dstream_conf);
+	free(filter_conf);
+	free(file_conf);
+
+	return NULL;
+}
+
+/**
+ * @brief Load Data Stream from a Configuration document.
+ *
+ * @param kshark_ctx: Input location for session context pointer.
+ * @param conf: Input location for the kshark_config_doc instance. Currently
+ *		only Json format is supported.
+ * @param data_rows: Output location for the trace data. The user is
+ *		     responsible for freeing the elements of the outputted
+ *		     array.
+ * @param data_size: Output location for the size of the outputted.
+ *
+ * @returns The Stream Id on the loaded Data Stream on success, otherwise a
+ *	    negative error code.
+ */
+int kshark_import_dstream(struct kshark_context *kshark_ctx,
+			  struct kshark_config_doc *conf,
+			  struct kshark_entry ***data_rows,
+			  size_t *data_size)
+{
+	struct kshark_config_doc *file_conf, *filter_conf;
+	bool ret = false;
+	int sd = -EFAULT;
+
+	*data_size = 0;
+
+	if (!kshark_type_check(conf, "kshark.config.stream"))
+		return sd;
+
+	file_conf = kshark_config_alloc(KS_CONFIG_JSON);
+	filter_conf = kshark_config_alloc(KS_CONFIG_JSON);
+
+	if (file_conf && filter_conf &&
+	    kshark_config_doc_get(conf, "data", file_conf) &&
+	    kshark_config_doc_get(conf, "filters", filter_conf)) {
+		sd = kshark_import_trace_file(kshark_ctx, file_conf);
+		if (sd >= 0) {
+			ret = kshark_import_all_filters(kshark_ctx, sd,
+							filter_conf);
+			if (!ret) {
+				kshark_close(kshark_ctx, sd);
+				return -EFAULT;
+			}
+
+			*data_size = kshark_load_data_entries(kshark_ctx, sd,
+							      data_rows);
+		}
+	}
+
+	free(file_conf);
+	free(filter_conf);
+
+	return sd;
+}
+
+static bool
+kshark_export_all_dstreams_to_json(struct kshark_context *kshark_ctx,
+				   struct json_object *jobj)
+{
+	int *stream_ids = kshark_all_streams(kshark_ctx);
+	struct kshark_config_doc *dstream_conf;
+	struct json_object *jall_streams;
+
+	jall_streams = json_object_new_array();
+
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		dstream_conf = kshark_export_dstream(kshark_ctx, stream_ids[i],
+						     KS_CONFIG_JSON);
+		json_object_array_put_idx(jall_streams, i, dstream_conf->conf_doc);
+
+		/* Free only the kshark_config_doc object. */
+		free(dstream_conf);
+	}
+
+	json_object_object_add(jobj, "data streams", jall_streams);
+	return true;
+}
+
+/**
+ * @brief Record the current configuration for all Data Streams into a Json
+ *	  document.
+ *
+ * @param kshark_ctx: Input location for session context pointer.
+ * @param conf: Input location for the kshark_config_doc instance. Currently
+ *		only Json format is supported. If NULL, a new Configuration
+ *		document will be created.
+ *
+ * @returns True on success, otherwise False.
+ */
+bool kshark_export_all_dstreams(struct kshark_context *kshark_ctx,
+				struct kshark_config_doc *conf)
+{
+	switch (conf->format) {
+	case KS_CONFIG_JSON:
+		return kshark_export_all_dstreams_to_json(kshark_ctx,
+							  conf->conf_doc);
+
+	default:
+		fprintf(stderr, "Document format %d not supported\n",
+			conf->format);
+		return false;
+	}
+}
+
+static void __calib(struct kshark_entry *e, int64_t *atgv) {
+	e->ts += atgv[0];
+}
+
+static bool
+kshark_import_all_dstreams_from_json(struct kshark_context *kshark_ctx,
+				     struct json_object *jobj,
+				     struct kshark_entry ***data_rows,
+				     size_t *data_size)
+{
+	struct kshark_config_doc dstream_conf;
+	struct kshark_entry **stream_data_rows = NULL, **merged_data_rows;
+	size_t stream_data_size = 0;
+	json_object *jall_streams, *jstream, *jcalib_argv, *jcalib;
+	int sd, i, j, length, calib_length;
+	int64_t *calib_argv = NULL;
+
+	if (!json_object_object_get_ex(jobj, "data streams", &jall_streams) ||
+	    json_object_get_type(jall_streams) != json_type_array)
+		goto fail;
+
+	length = json_object_array_length(jall_streams);
+	if (!length)
+		goto fail;
+
+	dstream_conf.format = KS_CONFIG_JSON;
+	jstream = json_object_array_get_idx(jall_streams, 0);
+	dstream_conf.conf_doc = jstream;
+	kshark_import_dstream(kshark_ctx, &dstream_conf, data_rows, data_size);
+
+	for (i = 1; i < length; ++i) {
+		jstream = json_object_array_get_idx(jall_streams, i);
+
+		if (!json_object_object_get_ex(jstream, "calib. array", &jcalib_argv) ||
+		    json_object_get_type(jcalib_argv) != json_type_array)
+			goto fail;
+
+		calib_length = json_object_array_length(jcalib_argv);
+		if (!calib_length)
+			goto fail;
+
+		calib_argv = calloc(calib_length, sizeof(*calib_argv));
+		for (j = 0; j < calib_length; ++j) {
+			jcalib = json_object_array_get_idx(jcalib_argv, j);
+			calib_argv[j] = json_object_get_int64(jcalib);
+		}
+
+		dstream_conf.conf_doc = jstream;
+
+		sd = kshark_import_dstream(kshark_ctx, &dstream_conf,
+					   &stream_data_rows, &stream_data_size);
+
+		merged_data_rows =
+			kshark_data_merge(*data_rows, *data_size,
+					  stream_data_rows, stream_data_size,
+					  __calib, calib_argv);
+
+		free(stream_data_rows);
+		free(*data_rows);
+
+		kshark_ctx->stream[sd]->calib_array = calib_argv;
+		kshark_ctx->stream[sd]->calib_array_size = calib_length;
+
+		stream_data_rows = *data_rows = NULL;
+
+		*data_rows = merged_data_rows;
+		*data_size += stream_data_size;
+	}
+
+	return true;
+
+ fail:
+	free(*data_rows);
+	free(calib_argv);
+	*data_size = 0;
+
+	return false;
+}
+
+/**
+ * @brief Load all Data Streams from a Configuration document.
+ *
+ * @param kshark_ctx: Input location for session context pointer.
+ * @param conf: Input location for the kshark_config_doc instance. Currently
+ *		only Json format is supported.
+ * @param data_rows: Output location for the trace data. The user is
+ *		     responsible for freeing the elements of the outputted
+ *		     array.
+ * @param data_size: Output location for the size of the outputted.
+ *
+ * @returns True, if a Data Stream has been loaded, otherwise False.
+ */
+bool kshark_import_all_dstreams(struct kshark_context *kshark_ctx,
+				struct kshark_config_doc *conf,
+				struct kshark_entry ***data_rows,
+				size_t *data_size)
+{
+	switch (conf->format) {
+	case KS_CONFIG_JSON:
+		return kshark_import_all_dstreams_from_json(kshark_ctx,
+							    conf->conf_doc,
+							    data_rows,
+							    data_size);
+
+	default:
+		fprintf(stderr, "Document format %d not supported\n",
+			conf->format);
+		return false;
+	}
 }
 
 static bool kshark_save_json_file(const char *file_name,

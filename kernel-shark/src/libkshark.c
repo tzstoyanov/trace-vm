@@ -1944,3 +1944,88 @@ kshark_get_entry_back(const struct kshark_entry_request *req,
 
 	return get_entry(req, data, index, req->first, end, -1);
 }
+
+/**
+ * @brief Merge two trace data streams.
+ *
+ * @param prior_data: Input location for the prior trace data. The clock used
+ *		      to record the prior data will be used by the merged data.
+ * @param prior_size: The size of the prior trace data.
+ * @param associated_data: Input location for the trace data to be merged to
+ *			   the prior. The clock of the associated data will be
+ * 			   calibrated in order to be compatible with the clock
+ * 			   of the prior data.
+ * @param associated_size: The size of the associated trace data.
+ * @param calib: Callback function providing the calibration of the clock of
+ *		 the associated data.
+ * @param argv: Array of arguments for the calibration function.
+ *
+ * @returns Merged and sorted in time trace data. The user is responsible for
+ *	    freeing the elements of the outputted array.
+ */
+struct kshark_entry **kshark_data_merge(struct kshark_entry **prior_data,
+					size_t prior_size,
+					struct kshark_entry **associated_data,
+					size_t associated_size,
+					time_calib_func calib,
+					int64_t *argv)
+{
+	size_t i = 0, prior_count = 0, assc_count = 0;
+	size_t tot = prior_size + associated_size;
+	size_t mid, l = 0, h = prior_size - 1;
+	struct kshark_entry **merged_data;
+
+	merged_data = calloc(tot, sizeof(*merged_data));
+
+	/*
+	 * Calibrate the timestamp of the first entry of the associated data.
+	 */
+	calib(associated_data[0], argv);
+
+	if (prior_data[0]->ts < associated_data[0]->ts) {
+		/*
+		 * After executing the BSEARCH macro, "l" will be the index of
+		 * the last prior entry having timestamp < associated_data[0]->ts
+		 * and "h" will be the index of the first prior entry having
+		 * timestamp >= associated_data[0]->ts.
+		 */
+		BSEARCH(h, l, prior_data[mid]->ts < associated_data[0]->ts);
+
+		/*
+		 * The prior data needs no time calibration. Copy all entries
+		 * before (in time) the first entry of the associated data.
+		 */
+		memcpy(merged_data, prior_data, h * sizeof(*prior_data));
+		i = prior_count = h;
+	}
+
+	for (; i < tot; ++i) {
+		if (prior_data[prior_count]->ts <= associated_data[assc_count]->ts) {
+			merged_data[i] = prior_data[prior_count++];
+			if (prior_count == prior_size)
+				break;
+		} else {
+			merged_data[i] = associated_data[assc_count++];
+			if (assc_count == associated_size)
+				break;
+
+			/* Calibrate the timestamp of the following entry. */
+			calib(associated_data[assc_count], argv);
+		}
+	}
+
+	if (prior_count == prior_size && assc_count < associated_size) {
+		/* Calibrate and copy the remaining associated data. */
+		for (++i; i < tot; ++i) {
+			merged_data[i] = associated_data[assc_count++];
+			calib(merged_data[i], argv);
+		}
+	} else if (prior_count < prior_size && assc_count == associated_size) {
+		/* Copy the remaining prior data. */
+		++i;
+		memcpy(&merged_data[i], &prior_data[prior_count],
+		       (tot - i) * sizeof(*prior_data));
+	}
+
+	return merged_data;
+}
