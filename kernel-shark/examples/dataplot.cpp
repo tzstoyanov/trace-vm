@@ -29,6 +29,7 @@ using namespace std;
 
 struct kshark_trace_histo	histo;
 vector<KsPlot::Graph *>		graphs;
+int stream_id;
 
 void usage(const char *prog)
 {
@@ -117,10 +118,10 @@ void play()
 		it = graphs.begin();
 
 		for (int const &cpu: CPUs)
-			(*it++)->fillCPUGraph(cpu);
+			(*it++)->fillCPUGraph(stream_id, cpu);
 
 		for (int const &pid: Tasks)
-			(*it++)->fillTaskGraph(pid);
+			(*it++)->fillTaskGraph(stream_id, pid);
 
 		/* Clear the screen. */
 		glClear(GL_COLOR_BUFFER_BIT);
@@ -146,7 +147,7 @@ int main(int argc, char **argv)
 	struct kshark_context *kshark_ctx(nullptr);
 	struct kshark_entry **data(nullptr);
 	static char *input_file(nullptr);
-	bool status, shapes(false);
+	bool shapes(false);
 	size_t r, nRows;
 	int c, nBins;
 
@@ -191,8 +192,8 @@ int main(int argc, char **argv)
 	if (!input_file)
 		input_file = default_file;
 
-	status = kshark_open(kshark_ctx, input_file);
-	if (!status) {
+	stream_id = kshark_open(kshark_ctx, input_file);
+	if (stream_id < 0) {
 		kshark_free(kshark_ctx);
 		usage(argv[0]);
 		cerr << "\nFailed to open file " << input_file << endl;
@@ -201,7 +202,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Load the content of the file into an array of entries. */
-	nRows = kshark_load_data_entries(kshark_ctx, &data);
+	nRows = kshark_load_data_entries(kshark_ctx, stream_id, &data);
 
 	/* Initialize the Visualization Model. */
 	ksmodel_init(&histo);
@@ -228,7 +229,7 @@ int main(int argc, char **argv)
 	ksmodel_clear(&histo);
 
 	/* Close the file. */
-	kshark_close(kshark_ctx);
+	kshark_close(kshark_ctx, stream_id);
 
 	/* Close the session. */
 	kshark_free(kshark_ctx);
