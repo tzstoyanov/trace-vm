@@ -955,7 +955,8 @@ static size_t get_records(struct kshark_context *kshark_ctx, int sd,
 				/* Execute all plugin-provided actions (if any). */
 				evt_handler = kshark_ctx->event_handlers;
 				while ((evt_handler = kshark_find_event_handler(evt_handler,
-										entry->event_id))) {
+										entry->event_id,
+										entry->stream_id))) {
 					evt_handler->event_func(kshark_ctx, rec, entry);
 					evt_handler = evt_handler->next;
 					entry->visible &= ~KS_PLUGIN_UNTOUCHED_MASK;
