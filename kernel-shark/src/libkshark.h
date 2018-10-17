@@ -466,7 +466,7 @@ kshark_add_collection_to_list(struct kshark_context *kshark_ctx,
 			      struct kshark_entry **data,
 			      size_t n_rows,
 			      matching_condition_func cond,
-			      int val,
+			      int sd, int val,
 			      size_t margin);
 
 struct kshark_entry_collection *
