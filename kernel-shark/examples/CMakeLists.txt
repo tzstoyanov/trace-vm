@@ -27,3 +27,7 @@ target_link_libraries(dplot   kshark-plot)
 message(STATUS "multiload")
 add_executable(mload          multiload.c)
 target_link_libraries(mload   kshark)
+
+message(STATUS "multiplot")
+add_executable(mplot          multiplot.cpp)
+target_link_libraries(mplot   kshark-plot)
