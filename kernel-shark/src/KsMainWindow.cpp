@@ -42,7 +42,8 @@ KsMainWindow::KsMainWindow(QWidget *parent)
   _plugins(this),
   _capture(this),
   _captureLocalServer(this),
-  _openAction("Open", this),
+  _openAction("Open Trace File", this),
+  _appendAction("Append Trace File", this),
   _restoreSessionAction("Restore Last Session", this),
   _importSessionAction("Import Session", this),
   _exportSessionAction("Export Sassion", this),
@@ -59,6 +60,7 @@ KsMainWindow::KsMainWindow(QWidget *parent)
   _cpuSelectAction("CPUs", this),
   _taskSelectAction("Tasks", this),
   _managePluginsAction("Manage plugins", this),
+  _virtComboSelectAction("Virt. Combos", this),
   _addPluginsAction("Add plugins", this),
   _captureAction("Record", this),
   _colorAction(this),
@@ -169,6 +171,13 @@ void KsMainWindow::_createActions()
 	connect(&_openAction,	&QAction::triggered,
 		this,		&KsMainWindow::_open);
 
+	_appendAction.setIcon(QIcon::fromTheme("document-open"));
+	_appendAction.setShortcut(tr("Ctrl+A"));
+	_appendAction.setStatusTip("Append an existing data file");
+
+	connect(&_appendAction,	&QAction::triggered,
+		this,		&KsMainWindow::_append);
+
 	_restoreSessionAction.setIcon(QIcon::fromTheme("document-open-recent"));
 	connect(&_restoreSessionAction,	&QAction::triggered,
 		this,			&KsMainWindow::_restoreSession);
@@ -226,6 +235,9 @@ void KsMainWindow::_createActions()
 
 	connect(&_taskSelectAction,	&QAction::triggered,
 		this,			&KsMainWindow::_taskSelect);
+
+	connect(&_virtComboSelectAction,&QAction::triggered,
+		this,			&KsMainWindow::_virtComboSelect);
 
 	/* Tools menu */
 	_managePluginsAction.setShortcut(tr("Ctrl+P"));
@@ -290,6 +302,7 @@ void KsMainWindow::_createMenus()
 	/* File menu */
 	file = menuBar()->addMenu("File");
 	file->addAction(&_openAction);
+	file->addAction(&_appendAction);
 
 	sessions = file->addMenu("Sessions");
 	sessions->setIcon(QIcon::fromTheme("document-properties"));
@@ -340,6 +353,7 @@ void KsMainWindow::_createMenus()
 	plots = menuBar()->addMenu("Plots");
 	plots->addAction(&_cpuSelectAction);
 	plots->addAction(&_taskSelectAction);
+	plots->addAction(&_virtComboSelectAction);
 
 	/* Tools menu */
 	tools = menuBar()->addMenu("Tools");
@@ -366,6 +380,18 @@ void KsMainWindow::_open()
 
 	if (!fileName.isEmpty())
 		loadDataFile(fileName);
+}
+
+void KsMainWindow::_append()
+{
+	QString fileName =
+		QFileDialog::getOpenFileName(this,
+					     "Append File",
+					     KS_DIR,
+					     "trace-cmd files (*.dat);;All files (*)");
+
+	if (!fileName.isEmpty())
+		appendDataFile(fileName);
 }
 
 void KsMainWindow::_restoreSession()
@@ -399,9 +425,9 @@ void KsMainWindow::_updateSession()
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
-	_session.saveGraphs(*_graph.glPtr());
 	_session.saveVisModel(_graph.glPtr()->model()->histo());
-	_session.saveFilters(kshark_ctx);
+	_session.saveDataStreams(kshark_ctx);
+	_session.saveGraphs(kshark_ctx, _graph);
 	_session.saveDualMarker(&_mState);
 	_session.saveTable(_view);
 	_session.saveColorScheme();
@@ -456,7 +482,6 @@ void KsMainWindow::_updateFilterMenu()
 void KsMainWindow::_importFilter()
 {
 	kshark_context *kshark_ctx(nullptr);
-	kshark_config_doc *conf;
 	QString fileName;
 
 	if (!kshark_instance(&kshark_ctx))
@@ -468,23 +493,12 @@ void KsMainWindow::_importFilter()
 	if (fileName.isEmpty())
 		return;
 
-	conf = kshark_open_config_file(fileName.toStdString().c_str(),
-				       "kshark.config.filter");
-	if (!conf)
-		return;
-
-	kshark_import_all_event_filters(kshark_ctx, conf);
-	kshark_free_config_doc(conf);
-
-	kshark_filter_entries(kshark_ctx, _data.rows(), _data.size());
-	_filterSyncCBoxUpdate(kshark_ctx);
-	emit _data.updateWidgets(&_data);
+	_session.loadFilters(kshark_ctx, fileName, &_data);
 }
 
 void KsMainWindow::_exportFilter()
 {
 	kshark_context *kshark_ctx(nullptr);
-	kshark_config_doc *conf(nullptr);
 	QString fileName;
 
 	if (!kshark_instance(&kshark_ctx))
@@ -504,9 +518,7 @@ void KsMainWindow::_exportFilter()
 		}
 	}
 
-	kshark_export_all_event_filters(kshark_ctx, &conf);
-	kshark_save_config_file(fileName.toStdString().c_str(), conf);
-	kshark_free_config_doc(conf);
+	_session.saveFilters(kshark_ctx, fileName);
 }
 
 void KsMainWindow::_listFilterSync(int state)
@@ -524,36 +536,71 @@ void KsMainWindow::_graphFilterSync(int state)
 void KsMainWindow::_showEvents()
 {
 	kshark_context *kshark_ctx(nullptr);
+	QVector<KsCheckBoxWidget *> cbds;
 	KsCheckBoxWidget *events_cb;
 	KsCheckBoxDialog *dialog;
+	kshark_data_stream *stream;
+	int *streamIds, sd;
 
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
-	events_cb = new KsEventsCheckBoxWidget(_data.tep(), this);
-	dialog = new KsCheckBoxDialog(events_cb, this);
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		stream = kshark_ctx->stream[sd];
+		events_cb = new KsEventsCheckBoxWidget(sd, this);
+		events_cb->setStream(QString(stream->file));
+		cbds.append(events_cb);
 
-	if (!kshark_ctx->show_event_filter ||
-	    !kshark_ctx->show_event_filter->count) {
-		events_cb->setDefault(true);
-	} else {
-		/*
-		 * The event filter contains IDs. Make this visible in the
-		 * CheckBox Widget.
-		 */
-		tep_event **events =
-			tep_list_events(_data.tep(), TEP_EVENT_SORT_SYSTEM);
-		int nEvts = tep_get_events_count(_data.tep());
-		QVector<bool> v(nEvts, false);
+		if (!stream->show_event_filter ||
+		    !stream->show_event_filter->count) {
+		    events_cb->setDefault(true);
+		} else {
+			/*
+			 * The event filter contains IDs. Make this visible in
+			 * the CheckBox Widget.
+			 */
+			tep_event **events = tep_list_events(_data.tep(sd),
+							     TEP_EVENT_SORT_SYSTEM);
+			int nEvts = tep_get_events_count(_data.tep(sd));
+			QVector<bool> v(nEvts, false);
+			for (int i = 0; i < nEvts; ++i) {
+				if (tracecmd_filter_id_find(stream->show_event_filter,
+							    events[i]->id))
+					v[i] = true;
+			}
 
-		for (int i = 0; i < nEvts; ++i) {
-			if (tracecmd_filter_id_find(kshark_ctx->show_event_filter,
-						    events[i]->id))
-				v[i] = true;
+			events_cb->set(v);
 		}
-
-		events_cb->set(v);
 	}
+
+// 	events_cb = new KsEventsCheckBoxWidget(_data.tep(), this);
+// 	dialog = new KsCheckBoxDialog(events_cb, this);
+// 
+// 	if (!kshark_ctx->show_event_filter ||
+// 	    !kshark_ctx->show_event_filter->count) {
+// 		events_cb->setDefault(true);
+// 	} else {
+// 		/*
+// 		 * The event filter contains IDs. Make this visible in the
+// 		 * CheckBox Widget.
+// 		 */
+// 		tep_event_format **events =
+// 			tep_list_events(_data.tep(), TEP_EVENT_SORT_SYSTEM);
+// 		int nEvts = tep_get_events_count(_data.tep());
+// 		QVector<bool> v(nEvts, false);
+// 
+// 		for (int i = 0; i < nEvts; ++i) {
+// 			if (tracecmd_filter_id_find(kshark_ctx->show_event_filter,
+// 						    events[i]->id))
+// 				v[i] = true;
+// 		}
+// 
+// 		events_cb->set(v);
+// 	}
+
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
 		&_data,		&KsDataStore::applyPosEventFilter);
@@ -564,31 +611,42 @@ void KsMainWindow::_showEvents()
 void KsMainWindow::_showTasks()
 {
 	kshark_context *kshark_ctx(nullptr);
+	QVector<KsCheckBoxWidget *> cbds;
+	kshark_data_stream *stream;
 	KsCheckBoxWidget *tasks_cbd;
 	KsCheckBoxDialog *dialog;
+	int *streamIds, sd;
 
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
-	tasks_cbd = new KsTasksCheckBoxWidget(_data.tep(), true, this);
-	dialog = new KsCheckBoxDialog(tasks_cbd, this);
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		stream = kshark_ctx->stream[sd];
+		tasks_cbd = new KsTasksCheckBoxWidget(sd, true, this);
+		tasks_cbd->setStream(QString(stream->file));
+		cbds.append(tasks_cbd);
 
-	if (!kshark_ctx->show_task_filter ||
-	    !kshark_ctx->show_task_filter->count) {
-		tasks_cbd->setDefault(true);
-	} else {
-		QVector<int> pids = KsUtils::getPidList();
-		int nPids = pids.count();
-		QVector<bool> v(nPids, false);
+		if (!stream->show_task_filter ||
+		    !stream->show_task_filter->count) {
+			tasks_cbd->setDefault(true);
+		} else {
+			QVector<int> pids = KsUtils::getPidList(sd);
+			int nPids = pids.count();
+			QVector<bool> v(nPids, false);
 
-		for (int i = 0; i < nPids; ++i) {
-			if (tracecmd_filter_id_find(kshark_ctx->show_task_filter,
-						    pids[i]))
-				v[i] = true;
+			for (int i = 0; i < nPids; ++i) {
+				if (tracecmd_filter_id_find(stream->show_task_filter,
+							    pids[i]))
+					v[i] = true;
+			}
+
+			tasks_cbd->set(v);
 		}
-
-		tasks_cbd->set(v);
 	}
+
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
 		&_data,		&KsDataStore::applyPosTaskFilter);
@@ -599,31 +657,42 @@ void KsMainWindow::_showTasks()
 void KsMainWindow::_hideTasks()
 {
 	kshark_context *kshark_ctx(nullptr);
+	QVector<KsCheckBoxWidget *> cbds;
+	kshark_data_stream *stream;
 	KsCheckBoxWidget *tasks_cbd;
 	KsCheckBoxDialog *dialog;
+	int *streamIds, sd;
 
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
-	tasks_cbd = new KsTasksCheckBoxWidget(_data.tep(), false, this);
-	dialog = new KsCheckBoxDialog(tasks_cbd, this);
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		stream = kshark_ctx->stream[sd];
+		tasks_cbd = new KsTasksCheckBoxWidget(sd, false, this);
+		tasks_cbd->setStream(QString(stream->file));
+		cbds.append(tasks_cbd);
 
-	if (!kshark_ctx->hide_task_filter ||
-	    !kshark_ctx->hide_task_filter->count) {
-		tasks_cbd->setDefault(false);
-	} else {
-		QVector<int> pids = KsUtils::getPidList();
-		int nPids = pids.count();
-		QVector<bool> v(nPids, false);
+		if (!stream->hide_task_filter ||
+		    !stream->hide_task_filter->count) {
+			tasks_cbd->setDefault(false);
+		} else {
+			QVector<int> pids = KsUtils::getPidList(sd);
+			int nPids = pids.count();
+			QVector<bool> v(nPids, false);
 
-		for (int i = 0; i < nPids; ++i) {
-			if (tracecmd_filter_id_find(kshark_ctx->hide_task_filter,
-						    pids[i]))
-				v[i] = true;
+			for (int i = 0; i < nPids; ++i) {
+				if (tracecmd_filter_id_find(stream->hide_task_filter,
+							    pids[i]))
+					v[i] = true;
+			}
+
+			tasks_cbd->set(v);
 		}
-
-		tasks_cbd->set(v);
 	}
+
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
 		&_data,		&KsDataStore::applyNegTaskFilter);
@@ -634,29 +703,39 @@ void KsMainWindow::_hideTasks()
 void KsMainWindow::_showCPUs()
 {
 	kshark_context *kshark_ctx(nullptr);
-	KsCheckBoxWidget *cpu_cbd;
+	QVector<KsCheckBoxWidget *> cbds;
+	kshark_data_stream *stream;
+	KsCheckBoxWidget *cpus_cbd;
 	KsCheckBoxDialog *dialog;
+	int *streamIds, sd, nCPUs;
 
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
-	cpu_cbd = new KsCPUCheckBoxWidget(_data.tep(), this);
-	dialog = new KsCheckBoxDialog(cpu_cbd, this);
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		stream = kshark_ctx->stream[sd];
+		cpus_cbd = new KsCPUCheckBoxWidget(sd, this);
+		cpus_cbd->setStream(QString(stream->file));
+		cbds.append(cpus_cbd);
 
-	if (!kshark_ctx->show_cpu_filter ||
-	    !kshark_ctx->show_cpu_filter->count) {
-		cpu_cbd->setDefault(true);
-	} else {
-		int nCPUs = tep_get_cpus(_data.tep());
-		QVector<bool> v(nCPUs, false);
+		nCPUs = tep_get_cpus(_data.tep(sd));
+		if (!stream->show_cpu_filter ||
+		    !stream->show_cpu_filter->count) {
+			cpus_cbd->setDefault(true);
+		} else {
+			QVector<bool> v(nCPUs, false);
+			for (int i = 0; i < nCPUs; ++i) {
+				if (tracecmd_filter_id_find(stream->show_cpu_filter, i))
+					v[i] = true;
+			}
 
-		for (int i = 0; i < nCPUs; ++i) {
-			if (tracecmd_filter_id_find(kshark_ctx->show_cpu_filter, i))
-				v[i] = true;
+			cpus_cbd->set(v);
 		}
-
-		cpu_cbd->set(v);
 	}
+
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
 		&_data,		&KsDataStore::applyPosCPUFilter);
@@ -667,58 +746,67 @@ void KsMainWindow::_showCPUs()
 void KsMainWindow::_hideCPUs()
 {
 	kshark_context *kshark_ctx(nullptr);
-	KsCheckBoxWidget *cpu_cbd;
+	QVector<KsCheckBoxWidget *> cbds;
+	kshark_data_stream *stream;
+	KsCheckBoxWidget *cpus_cbd;
 	KsCheckBoxDialog *dialog;
+	int *streamIds, sd, nCPUs;
 
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
-	cpu_cbd = new KsCPUCheckBoxWidget(_data.tep(), this);
-	dialog = new KsCheckBoxDialog(cpu_cbd, this);
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		stream = kshark_ctx->stream[sd];
+		cpus_cbd = new KsCPUCheckBoxWidget(sd, this);
+		cpus_cbd->setStream(QString(stream->file));
+		cbds.append(cpus_cbd);
 
-	if (!kshark_ctx->hide_cpu_filter ||
-	    !kshark_ctx->hide_cpu_filter->count) {
-		cpu_cbd->setDefault(false);
-	} else {
-		int nCPUs = tep_get_cpus(_data.tep());
-		QVector<bool> v(nCPUs, false);
+		nCPUs = tep_get_cpus(_data.tep(sd));
+		if (!stream->hide_cpu_filter ||
+		    !stream->hide_cpu_filter->count) {
+			cpus_cbd->setDefault(false);
+		} else {
+			QVector<bool> v(nCPUs, false);
+			for (int i = 0; i < nCPUs; ++i) {
+				if (tracecmd_filter_id_find(stream->hide_cpu_filter, i))
+					v[i] = true;
+			}
 
-		for (int i = 0; i < nCPUs; ++i) {
-			if (tracecmd_filter_id_find(kshark_ctx->hide_cpu_filter,
-						    i))
-				v[i] = true;
+			cpus_cbd->set(v);
 		}
-
-		cpu_cbd->set(v);
 	}
 
+	dialog = new KsCheckBoxDialog(cbds, this);
+
 	connect(dialog,		&KsCheckBoxDialog::apply,
-		&_data,		&KsDataStore::applyNegCPUFilter);
+		&_graph,	&KsTraceGraph::cpuReDraw);
 
 	dialog->show();
 }
 
 void KsMainWindow::_advancedFiltering()
 {
-	KsAdvFilteringDialog *dialog;
-
-	if (!_data.tep()) {
-		QErrorMessage *em = new QErrorMessage(this);
-		QString text("Unable to open Advanced filtering dialog.");
-
-		text += " Tracing data has to be loaded first.";
-
-		em->showMessage(text, "advancedFiltering");
-		qCritical() << "ERROR: " << text;
-
-		return;
-	}
-
-	dialog = new KsAdvFilteringDialog(this);
-	connect(dialog,		&KsAdvFilteringDialog::dataReload,
-		&_data,		&KsDataStore::reload);
-
-	dialog->show();
+// 	KsAdvFilteringDialog *dialog;
+// 
+// 	if (!_data.tep()) {
+// 		QErrorMessage *em = new QErrorMessage(this);
+// 		QString text("Unable to open Advanced filtering dialog.");
+// 
+// 		text += " Tracing data has to be loaded first.";
+// 
+// 		em->showMessage(text, "advancedFiltering");
+// 		qCritical() << "ERROR: " << text;
+// 
+// 		return;
+// 	}
+// 
+// 	dialog = new KsAdvFilteringDialog(this);
+// 	connect(dialog,		&KsAdvFilteringDialog::dataReload,
+// 		&_data,		&KsDataStore::reload);
+// 
+// 	dialog->show();
 }
 
 void KsMainWindow::_clearFilters()
@@ -728,22 +816,35 @@ void KsMainWindow::_clearFilters()
 
 void KsMainWindow::_cpuSelect()
 {
-	KsCheckBoxWidget *cpus_cbd = new KsCPUCheckBoxWidget(_data.tep(), this);
-	KsCheckBoxDialog *dialog = new KsCheckBoxDialog(cpus_cbd, this);
+	kshark_context *kshark_ctx(nullptr);
+	QVector<KsCheckBoxWidget *> cbds;
+	KsCheckBoxWidget *cpus_cbd;
+	KsCheckBoxDialog *dialog;
+	int *streamIds, sd, nCPUs;
 
-	if(_data.tep()) {
-		int nCPUs = tep_get_cpus(_data.tep());
-		if (nCPUs == _graph.glPtr()->cpuGraphCount()) {
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		cpus_cbd = new KsCPUCheckBoxWidget(sd, this);
+		cpus_cbd->setStream(QString(kshark_ctx->stream[sd]->file));
+		cbds.append(cpus_cbd);
+
+		nCPUs = tep_get_cpus(_data.tep(sd));
+		if (nCPUs == _graph.glPtr()->cpuGraphCount(sd)) {
 			cpus_cbd->setDefault(true);
 		} else {
 			QVector<bool> v(nCPUs, false);
-
-			for (auto const &cpu: _graph.glPtr()->_cpuList)
+			for (auto const &cpu: _graph.glPtr()->_streamPlots[sd]._cpuList)
 				v[cpu] = true;
 
 			cpus_cbd->set(v);
 		}
 	}
+
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
 		&_graph,	&KsTraceGraph::cpuReDraw);
@@ -753,28 +854,45 @@ void KsMainWindow::_cpuSelect()
 
 void KsMainWindow::_taskSelect()
 {
-	KsCheckBoxWidget *tasks_cbd = new KsTasksCheckBoxWidget(_data.tep(),
-								true,
-								this);
-	KsCheckBoxDialog *dialog = new KsCheckBoxDialog(tasks_cbd, this);
-	QVector<int> pids = KsUtils::getPidList();
-	int nPids = pids.count();
+	kshark_context *kshark_ctx(nullptr);
+	QVector<KsCheckBoxWidget *> cbds;
+	KsCheckBoxWidget *tasks_cbd;
+	KsCheckBoxDialog *dialog;
+	int *streamIds, sd, nPids;
+	QVector<int> pids;
 
-	if (nPids == _graph.glPtr()->taskGraphCount()) {
-		tasks_cbd->setDefault(true);
-	} else {
-		QVector<bool> v(nPids, false);
-		for (int i = 0; i < nPids; ++i) {
-			for (auto const &pid: _graph.glPtr()->_taskList) {
-				if (pids[i] == pid) {
-					v[i] = true;
-					break;
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		tasks_cbd = new KsTasksCheckBoxWidget(sd, true, this);
+		tasks_cbd->setStream(QString(kshark_ctx->stream[sd]->file));
+		cbds.append(tasks_cbd);
+
+		pids = KsUtils::getPidList(sd);
+		nPids = pids.count();
+		if (nPids == _graph.glPtr()->taskGraphCount(sd)) {
+			tasks_cbd->setDefault(true);
+		} else {
+			QVector<bool> v(nPids, false);
+			for (int i = 0; i < nPids; ++i) {
+				QVector<int> plots =
+					_graph.glPtr()->_streamPlots[sd]._taskList;
+				for (auto const &pid: plots) {
+					if (pids[i] == pid) {
+						v[i] = true;
+						break;
+					}
 				}
 			}
-		}
 
-		tasks_cbd->set(v);
+			tasks_cbd->set(v);
+		}
 	}
+
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
 		&_graph,	&KsTraceGraph::taskReDraw);
@@ -782,25 +900,53 @@ void KsMainWindow::_taskSelect()
 	dialog->show();
 }
 
+void KsMainWindow::_virtComboSelect()
+{
+	kshark_context *kshark_ctx(nullptr);
+	KsComboPlotDialog *dialog;
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	dialog = new KsComboPlotDialog(this);
+
+	connect(dialog,		&KsComboPlotDialog::apply,
+		&_graph,	&KsTraceGraph::comboReDraw);
+
+	dialog->show();
+}
+
 void KsMainWindow::_pluginSelect()
 {
+	kshark_context *kshark_ctx(nullptr);
+	QVector<bool> registeredPlugins;
+	QVector<KsCheckBoxWidget *> cbds;
 	KsCheckBoxWidget *plugin_cbd;
 	KsCheckBoxDialog *dialog;
-	QVector<bool> registeredPlugins;
+	int *streamIds, sd;
 	QStringList plugins;
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
 
 	plugins << _plugins._ksPluginList << _plugins._userPluginList;
 
 	registeredPlugins << _plugins._registeredKsPlugins
 			  << _plugins._registeredUserPlugins;
 
-	plugin_cbd = new KsPluginCheckBoxWidget(plugins, this);
-	plugin_cbd->set(registeredPlugins);
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		plugin_cbd = new KsPluginCheckBoxWidget(sd, plugins, this);
+		plugin_cbd->setStream(QString(kshark_ctx->stream[sd]->file));
+		plugin_cbd->set(registeredPlugins);
+		cbds.append(plugin_cbd);
+	}
 
-	dialog = new KsCheckBoxDialog(plugin_cbd, this);
+	dialog = new KsCheckBoxDialog(cbds, this);
 
 	connect(dialog,		&KsCheckBoxDialog::apply,
-		&_plugins,	&KsPluginManager::updatePlugins);
+		&_plugins,	&KsPluginManager::updatePlugins_hack);
 
 	dialog->show();
 }
@@ -864,14 +1010,14 @@ void KsMainWindow::_changeScreenMode()
 
 void KsMainWindow::_aboutInfo()
 {
-	KsMessageDialog *message;
+	KsWidgetsLib::KsMessageDialog *message;
 	QString text;
 
 	text.append(" KernelShark\n\n version: ");
 	text.append(KS_VERSION_STRING);
 	text.append("\n");
 
-	message = new KsMessageDialog(text);
+	message = new KsWidgetsLib::KsMessageDialog(text);
 	message->setWindowTitle("About");
 	message->show();
 }
@@ -882,13 +1028,12 @@ void KsMainWindow::_contents()
 				  QUrl::TolerantMode));
 }
 
-/** Load trace data for file. */
-void KsMainWindow::loadDataFile(const QString& fileName)
+void KsMainWindow::_load(const QString& fileName, bool append)
 {
-	char buff[FILENAME_MAX];
 	QString pbLabel("Loading    ");
 	bool loadDone = false;
 	struct stat st;
+	double shift;
 	int ret;
 
 	ret = stat(fileName.toStdString().c_str(), &st);
@@ -904,9 +1049,16 @@ void KsMainWindow::loadDataFile(const QString& fileName)
 
 	qInfo() << "Loading " << fileName;
 
-	_mState.reset();
-	_view.reset();
-	_graph.reset();
+	if (append) {
+		bool ok;
+		shift = QInputDialog::getDouble(this, tr("Append Trace file"),
+						   tr("Offset [usec]:"), 0,
+						   INT_MIN, INT_MAX, 1, &ok);
+		if (ok)
+			shift *= 1000.;
+		else
+			shift = 0.;
+	}
 
 	if (fileName.size() < 40) {
 		pbLabel += fileName;
@@ -916,14 +1068,29 @@ void KsMainWindow::loadDataFile(const QString& fileName)
 	}
 
 	setWindowTitle("Kernel Shark");
-	KsProgressBar pb(pbLabel);
+	KsWidgetsLib::KsProgressBar pb(pbLabel);
 	QApplication::processEvents();
 
-	auto lamLoadJob = [&](KsDataStore *d) {
+	_view.reset();
+	_graph.reset();
+
+	auto lamLoadJob = [&] (KsDataStore *d) {
 		d->loadDataFile(fileName);
 		loadDone = true;
 	};
-	std::thread tload(lamLoadJob, &_data);
+
+	auto lamAppendJob = [&] (KsDataStore *d) {
+		d->appendDataFile(fileName, shift);
+		loadDone = true;
+	};
+
+	std::thread job;
+	if (append) {
+		job = std::thread(lamAppendJob, &_data);
+	} else {
+		job = std::thread(lamLoadJob, &_data);
+	}
+// 	std::thread job(lamLoadJob, &_data);
 
 	for (int i = 0; i < 160; ++i) {
 		/*
@@ -937,7 +1104,7 @@ void KsMainWindow::loadDataFile(const QString& fileName)
 		usleep(150000);
 	}
 
-	tload.join();
+	job.join();
 
 	if (!_data.size()) {
 		QString text("File ");
@@ -950,17 +1117,26 @@ void KsMainWindow::loadDataFile(const QString& fileName)
 	}
 
 	pb.setValue(165);
-	_view.loadData(&_data);
 
+	_view.loadData(&_data);
 	pb.setValue(180);
+
 	_graph.loadData(&_data);
 	pb.setValue(195);
-	setWindowTitle("Kernel Shark (" + fileName + ")");
+}
 
-	if (realpath(fileName.toStdString().c_str(), buff)) {
-		QString path(buff);
-		_session.saveDataFile(path);
-	}
+/** Load trace data for file. */
+void KsMainWindow::loadDataFile(const QString& fileName)
+{
+	_mState.reset();
+	_load(fileName, false);
+	setWindowTitle("Kernel Shark (" + fileName + ")");
+}
+
+/** Append trace data for file. */
+void KsMainWindow::appendDataFile(const QString& fileName)
+{
+	_load(fileName, true);
 }
 
 void KsMainWindow::_error(const QString &text, const QString &errCode,
@@ -1004,6 +1180,9 @@ void KsMainWindow::loadSession(const QString &fileName)
 		return;
 	}
 
+	KsWidgetsLib::KsProgressBar pb("Loading session settings ...");
+	pb.setValue(10);
+
 	if (!_session.importFromFile(fileName)) {
 		QString text("Unable to open session description file ");
 
@@ -1015,42 +1194,29 @@ void KsMainWindow::loadSession(const QString &fileName)
 	}
 
 	_session.loadPlugins(kshark_ctx, &_plugins);
+	pb.setValue(20);
 
-	QString dataFile(_session.getDataFile(kshark_ctx));
-	if (dataFile.isEmpty()) {
-		QString text("Unable to open trace data file for session ");
-
-		text.append(fileName);
-		text.append("\n");
-		_error(text, "loadSessErr1", true, true);
-
-		return;
-	}
-
-	loadDataFile(dataFile);
-	if (!_data.tep()) {
+	_session.loadDataStreams(kshark_ctx, &_data);
+	if (!kshark_ctx->n_streams) {
 		_plugins.unloadAll();
 		return;
 	}
 
-	KsProgressBar pb("Loading session settings ...");
-	pb.setValue(10);
+	_view.loadData(&_data);
+	_graph.loadData(&_data);
 
-	_session.loadGraphs(&_graph);
-	pb.setValue(20);
-
-	_session.loadFilters(kshark_ctx, &_data);
 	_filterSyncCBoxUpdate(kshark_ctx);
-	pb.setValue(130);
+	pb.setValue(110);
 
 	_session.loadSplitterSize(&_splitter);
 	_session.loadMainWindowSize(this);
 	this->show();
-	pb.setValue(140);
+	pb.setValue(120);
 
 	_session.loadDualMarker(&_mState, &_graph);
 	_session.loadVisModel(_graph.glPtr()->model());
 	_mState.updateMarkers(_data, _graph.glPtr());
+	_session.loadGraphs(kshark_ctx, _graph);
 	pb.setValue(170);
 
 	_session.loadTable(&_view);

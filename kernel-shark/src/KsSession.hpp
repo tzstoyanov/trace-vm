@@ -49,13 +49,20 @@ public:
 
 	void loadVisModel(KsGraphModel *model);
 
-	void saveGraphs(const KsGLWidget &glw);
+	void saveGraphs(kshark_context *kshark_ctx,
+			KsTraceGraph &graphs);
 
-	void loadGraphs(KsTraceGraph *graphs);
+	void loadGraphs(kshark_context *kshark_ctx,
+			KsTraceGraph &graphs);
 
-	void saveFilters(kshark_context *kshark_ctx);
+	void saveFilters(kshark_context *kshark_ctx, const QString &fileName);
 
-	void loadFilters(kshark_context *kshark_ctx, KsDataStore *data);
+	void loadFilters(kshark_context *kshark_ctx, const QString &fileName,
+						     KsDataStore *data);
+
+	void saveDataStreams(kshark_context *kshark_ctx);
+
+	void loadDataStreams(kshark_context *kshark_ctx, KsDataStore *data);
 
 	void saveMainWindowSize(const QMainWindow &window);
 
@@ -86,13 +93,21 @@ private:
 
 	json_object *_getMarkerJson();
 
-	void _saveCPUPlots(const QVector<int> &cpus);
+	void _savePlots(int sd, KsGLWidget *glw, bool cpu);
 
-	QVector<int> _getCPUPlots();
+	QVector<int> _getPlots(int sd, bool cpu);
 
-	void _saveTaskPlots(const QVector<int> &tasks);
+	void _saveCPUPlots(int sd, KsGLWidget *glw);
 
-	QVector<int> _getTaskPlots();
+	QVector<int> _getCPUPlots(int sd);
+
+	void _saveTaskPlots(int sd, KsGLWidget *glw);
+
+	QVector<int> _getTaskPlots(int sd);
+
+	void _saveComboPlots(KsGLWidget *glw);
+
+	QVector<QVector<int>> _getComboPlots();
 
 	bool _getMarker(const char* name, size_t *pos);
 

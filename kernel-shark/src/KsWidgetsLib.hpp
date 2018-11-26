@@ -15,6 +15,13 @@
 // Qt
 #include <QtWidgets>
 
+// KernelShark
+#include "libkshark.h"
+#include "KsUtils.hpp"
+
+namespace KsWidgetsLib
+{
+
 /**
  * The KsProgressBar class provides a visualization of the progress of a
  * running job.
@@ -66,9 +73,6 @@ public:
 /** The width of the KsMessageDialog widget. */
 #define KS_MSG_DIALOG_WIDTH  (SCREEN_WIDTH / 10)
 
-namespace KsWidgetsLib
-{
-
 bool fileExistsDialog(QString fileName);
 
 }; // KsWidgetsLib
@@ -81,7 +85,7 @@ class KsCheckBoxWidget : public QWidget
 {
 	Q_OBJECT
 public:
-	KsCheckBoxWidget(const QString &name = "",
+	KsCheckBoxWidget(int sd, const QString &name = "",
 			 QWidget *parent = nullptr);
 
 	/** Get the name of the widget. */
@@ -95,18 +99,50 @@ public:
 		return false;
 	}
 
+	void setVisibleCbAll(bool v) {_allCbAction->setVisible(v);}
+
 	void setDefault(bool);
 
 	void set(QVector<bool> v);
 
 	QVector<int> getCheckedIds();
 
+	/**
+	 * Get the identifier of the Data stream for which the selection
+	 * applies.
+	 */
+	int sd() const {return _sd;}
+
+	void setStream(QString stream)
+	{
+		_streamName = stream;
+		KsUtils::setElidedText(&_stramLabel, _streamName,
+				       Qt::ElideLeft, width());
+		QApplication::processEvents();
+	}
+
+	/**
+	 * Reimplemented event handler used to update the geometry of the widget on
+	 * resize events.
+	 */
+	void resizeEvent(QResizeEvent* event)
+	{
+		KsUtils::setElidedText(&_stramLabel, _streamName,
+				       Qt::ElideLeft, width());
+		QApplication::processEvents();
+	}
+
 private:
 	QToolBar _tb;
 
 protected:
+	/** Identifier of the Data stream for which the selection applies. */
+	int		_sd;
+
 	/** The "all" checkboxe. */
 	QCheckBox	_allCb;
+
+	QAction		*_allCbAction;
 
 	/** A vector of Id numbers coupled to each checkboxe. */
 	QVector<int>	_id;
@@ -119,6 +155,12 @@ protected:
 
 	/** The top level layout of this widget. */
 	QVBoxLayout	_topLayout;
+
+	QString		_streamName;
+	/**
+	 * A label to show the name of the Data stream for which the selection
+	 * applies. */
+	QLabel		_stramLabel;
 
 	/** The name of this widget. */
 	QString		_name;
@@ -146,20 +188,20 @@ class KsCheckBoxDialog : public QDialog
 public:
 	KsCheckBoxDialog() = delete;
 
-	KsCheckBoxDialog(KsCheckBoxWidget *cbw, QWidget *parent = nullptr);
+	KsCheckBoxDialog(QVector<KsCheckBoxWidget *> cbws, QWidget *parent = nullptr);
 
 signals:
 	/** Signal emitted when the "Apply" button is pressed. */
-	void apply(QVector<int>);
+	void apply(int sd, QVector<int>);
 
 private:
 	void _applyPress();
 
 	QVBoxLayout		_topLayout;
 
-	QHBoxLayout		_buttonLayout;
+	QHBoxLayout		_cbLayout, _buttonLayout;
 
-	KsCheckBoxWidget	*_checkBoxWidget;
+	QVector<KsCheckBoxWidget *>	_checkBoxWidgets;
 
 	QPushButton		_applyButton, _cancelButton;
 
@@ -199,8 +241,14 @@ class KsCheckBoxTableWidget : public KsCheckBoxWidget
 {
 	Q_OBJECT
 public:
-	KsCheckBoxTableWidget(const QString &name = "",
+	KsCheckBoxTableWidget(int sd, const QString &name = "",
 			      QWidget *parent = nullptr);
+
+	void setSingleSelection()
+	{
+		_table.setSelectionMode(QAbstractItemView::SingleSelection); // !!!!!!!!!!
+		setVisibleCbAll(false);
+	}
 
 protected:
 	void _adjustSize();
@@ -260,8 +308,14 @@ class KsCheckBoxTreeWidget : public KsCheckBoxWidget
 public:
 	KsCheckBoxTreeWidget() = delete;
 
-	KsCheckBoxTreeWidget(const QString &name = "",
+	KsCheckBoxTreeWidget(int sd, const QString &name = "",
 			     QWidget *parent = nullptr);
+
+	void setSingleSelection()
+	{
+		_tree.setSelectionMode(QAbstractItemView::SingleSelection);  // !!!!!!!!!!
+		setVisibleCbAll(false);
+	}
 
 protected:
 	void _adjustSize();
@@ -290,6 +344,45 @@ private:
 	void _verify();
 };
 
+class KsComboPlotDialog : public QDialog
+{
+	Q_OBJECT
+public:
+	explicit KsComboPlotDialog(QWidget *parent = nullptr);
+
+signals:
+	/** Signal emitted when the "Apply" button is pressed. */
+	void apply(int sd, QVector<int>);
+
+private:
+	QVBoxLayout			_topLayout;
+
+	QGridLayout			_streamMenuLayout;
+
+	QHBoxLayout			_cbLayout, _buttonLayout;
+
+	QLabel				_hostStreamLabel, _guestStreamLabel;
+
+	QComboBox			_hostStreamComboBox;
+
+	QComboBox			_guestStreamComboBox;
+
+	KsCheckBoxTreeWidget		*_vcpuCheckBoxWidget;
+
+	KsCheckBoxTableWidget		*_hostCheckBoxWidget;
+
+	QPushButton			_applyButton, _cancelButton;
+
+	QMetaObject::Connection		_applyButtonConnection;
+
+	void _applyPress();
+
+private slots:
+	void _hostStreamChanged(const QString&);
+
+	void _guestStreamChanged(const QString&);
+};
+
 /**
  * The KsCPUCheckBoxWidget class provides a widget for selecting CPU plots to
  * show.
@@ -298,8 +391,7 @@ struct KsCPUCheckBoxWidget : public KsCheckBoxTreeWidget
 {
 	KsCPUCheckBoxWidget() = delete;
 
-	KsCPUCheckBoxWidget(struct tep_handle *pe,
-			    QWidget *parent = nullptr);
+	KsCPUCheckBoxWidget(int sd, QWidget *parent = nullptr);
 };
 
 /**
@@ -310,9 +402,7 @@ struct KsTasksCheckBoxWidget : public KsCheckBoxTableWidget
 {
 	KsTasksCheckBoxWidget() = delete;
 
-	KsTasksCheckBoxWidget(struct tep_handle *pe,
-			      bool cond = true,
-			      QWidget *parent = nullptr);
+	KsTasksCheckBoxWidget(int sd, bool cond, QWidget *parent = nullptr);
 
 private:
 	/**
@@ -330,10 +420,14 @@ struct KsEventsCheckBoxWidget : public KsCheckBoxTreeWidget
 {
 	KsEventsCheckBoxWidget() = delete;
 
-	KsEventsCheckBoxWidget(struct tep_handle *pe,
-			       QWidget *parent = nullptr);
+	KsEventsCheckBoxWidget(int sd, QWidget *parent = nullptr);
+
+	KsEventsCheckBoxWidget(tep_handle *pevent, QWidget *parent = nullptr);
 
 	void removeSystem(QString name);
+
+private:
+	void _makeItems(tep_event **events, int nEvts);
 };
 
 /**
@@ -343,7 +437,7 @@ struct KsPluginCheckBoxWidget : public KsCheckBoxTableWidget
 {
 	KsPluginCheckBoxWidget() = delete;
 
-	KsPluginCheckBoxWidget(QStringList pluginList,
+	KsPluginCheckBoxWidget(int sd, QStringList pluginList,
 			       QWidget *parent = nullptr);
 };
 

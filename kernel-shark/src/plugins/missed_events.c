@@ -19,10 +19,13 @@ static void nop_action(struct kshark_context *kshark_ctx,
 {}
 
 /** Load this plugin. */
-int KSHARK_PLUGIN_INITIALIZER(struct kshark_context *kshark_ctx)
+int KSHARK_PLUGIN_INITIALIZER(struct kshark_context *kshark_ctx, int sd)
 {
+	printf("--> missed_events init %i\n", sd);
+
 	kshark_register_event_handler(&kshark_ctx->event_handlers,
 				      KS_EVENT_OVERFLOW,
+				      sd,
 				      nop_action,
 				      draw_missed_events);
 
@@ -30,10 +33,13 @@ int KSHARK_PLUGIN_INITIALIZER(struct kshark_context *kshark_ctx)
 }
 
 /** Unload this plugin. */
-int KSHARK_PLUGIN_DEINITIALIZER(struct kshark_context *kshark_ctx)
+int KSHARK_PLUGIN_DEINITIALIZER(struct kshark_context *kshark_ctx, int sd)
 {
+	printf("<-- missed_events close %i\n", sd);
+
 	kshark_unregister_event_handler(&kshark_ctx->event_handlers,
 					KS_EVENT_OVERFLOW,
+					sd,
 					nop_action,
 					draw_missed_events);
 

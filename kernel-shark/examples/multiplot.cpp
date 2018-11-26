@@ -51,7 +51,6 @@ void plot()
 		stream = kshark_get_data_stream(kshark_ctx, sd);
 		nCPUs = tep_get_cpus(stream->pevent);
 		for (int cpu = 0; cpu < nCPUs; ++cpu) {
-// 			graph = new KsPlot::Graph(&histos[d], &colors);
 			graph = new KsPlot::Graph(&histo_m, &pidColors,
 							    &pidColors);
 

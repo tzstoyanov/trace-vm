@@ -16,6 +16,7 @@
 #include <QtWidgets>
 
 // KernelShark
+#include "libkshark.h"
 #include "KsWidgetsLib.hpp"
 
 /**

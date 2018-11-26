@@ -318,13 +318,29 @@ public:
 
 	void setY(int yA, int yB);
 
+	int cpuY() const {return _cpu.y();}
+
 	void setCPUY(int yCPU);
+
+	bool cpuIsVisible() const {return _cpu._visible;}
 
 	void setCPUVisible(bool v);
 
+	int taskY() const {return _task.y();}
+
 	void setTaskY(int yTask);
 
+	bool taskIsVisible() const {return _task._visible;}
+
 	void setTaskVisible(bool v);
+
+	int comboY() const {return _combo.y();}
+
+	void setComboY(int yCombo);
+
+	bool comboIsVisible() const {return _combo._visible;}
+
+	void setComboVisible(bool v);
 
 private:
 	void _draw(const Color &col, float size = 1.) const override;
@@ -340,6 +356,9 @@ private:
 
 	/** A point indicating the position of the Mark in a Task graph. */
 	Point _task;
+
+	/** A point indicating the position of the Mark in a Combo graph. */
+	Point _combo;
 };
 
 /** This class represents a KernelShark graph's bin. */
@@ -396,7 +415,7 @@ public:
 	 */
 	Graph(const Graph &) = delete;
 
-	/* Disable moving. Same as copying.*/
+	/* Disable moving. Same as copying. */
 	Graph(Graph &&) = delete;
 
 	Graph(kshark_trace_histo *histo, KsPlot::ColorTable *bct,
@@ -437,7 +456,7 @@ public:
 	void setHeight(int h);
 
 	/** @brief Get the vertical size (height) of the Graph. */
-	int getHeight() const {return _height;}
+	int height() const {return _height;}
 
 	void setBinValue(int bin, int val);
 
@@ -468,7 +487,9 @@ public:
 	 */
 	void setZeroSuppressed(bool zs) {_zeroSuppress = zs;}
 
-private:
+	void drawBase(bool b) {_drawBase = b;}
+
+protected:
 	/** Pointer to the model descriptor object. */
 	kshark_trace_histo	*_histoPtr;
 
@@ -498,7 +519,80 @@ private:
 
 	bool			_zeroSuppress;
 
+	bool			_drawBase;
+
 	void _initBins();
+};
+
+class ComboGraph {
+public:
+	ComboGraph();
+
+	/*
+	 * Disable copying. We can enable the Copy Constructor in the future,
+	 * but only if we really need it for some reason.
+	 */
+	ComboGraph(const Graph &) = delete;
+
+	/* Disable moving. Same as copying. */
+	ComboGraph(ComboGraph &&) = delete;
+
+	ComboGraph(kshark_trace_histo *histo, KsPlot::ColorTable *bct,
+					      KsPlot::ColorTable *ect);
+
+	/* Keep this destructor virtual. */
+	virtual ~ComboGraph() {}
+
+	/**
+	 * @brief Provide the Host graph with a Data Collection. This
+	 *	  collection will be used to optimise the processing of the
+	 *	  content of the bins.
+	 *
+	 * @param col: Input location for the data collection descriptor.
+	 */
+	void setHostDataCollectionPtr(kshark_entry_collection *col) {
+		_host.setDataCollectionPtr(col);
+	}
+
+	/**
+	 * @brief Provide the Guest graph with a Data Collection. This
+	 *	  collection will be used to optimise the processing of the
+	 *	  content of the bins.
+	 *
+	 * @param col: Input location for the data collection descriptor.
+	 */
+	void setGuestDataCollectionPtr(kshark_entry_collection *col) {
+		_guest.setDataCollectionPtr(col);
+	}
+
+	void setBase(int b);
+
+	void setHeight(int h);
+
+	/** @brief Get the vertical size (height) of the Combo graph. */
+	int height() const {return _host.height() + _guest.height();}
+
+	void setHMargin(int hMargin);
+
+	void fill(int sdHost, int pidHost, int sdGuest, int vcpu);
+
+	void draw(float size = 1);
+
+private:
+	/** Pointer to the model descriptor object. */
+	kshark_trace_histo	*_histoPtr;
+
+	Graph _host, _guest;
+
+	void _init();
+
+	void _drawBridge();
+
+	int _sdHost;
+
+	int _pidHost;
+
+	int _vcpuEntryId, _vcpuExitId;
 };
 
 }; // KsPlot

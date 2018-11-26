@@ -16,6 +16,9 @@
 extern "C" {
 #endif // __cplusplus
 
+// C
+#include <stdint.h>
+
 // trace-cmd
 #include "event-parse.h"
 
@@ -43,7 +46,7 @@ struct kshark_entry;
  * A function type to be used when defining load/reload/unload plugin
  * functions.
  */
-typedef int (*kshark_plugin_load_func)(struct kshark_context *);
+typedef int (*kshark_plugin_load_func)(struct kshark_context *, int);
 
 struct kshark_trace_histo;
 
@@ -59,7 +62,7 @@ struct kshark_cpp_argv {
 /** A function type to be used when defining plugin functions for drawing. */
 typedef void
 (*kshark_plugin_draw_handler_func)(struct kshark_cpp_argv *argv,
-				   int val, int draw_action);
+				   int sd, int val, int draw_action);
 
 /**
  * A function type to be used when defining plugin functions for data
@@ -147,6 +150,15 @@ void kshark_unregister_event_handler(struct kshark_event_handler **handlers,
 
 void kshark_free_event_handler_list(struct kshark_event_handler *handlers);
 
+/** Linked list of Data Stream identifiers. */
+struct kshark_stream_list {
+	/** Pointer to the next Data stream identifier. */
+	struct kshark_stream_list	*next;
+
+	/** Data stream identifier. */
+	uint8_t		stream_id;
+};
+
 /** Linked list of plugins. */
 struct kshark_plugin_list {
 	/** Pointer to the next Plugin. */
@@ -154,6 +166,9 @@ struct kshark_plugin_list {
 
 	/** The plugin object file to load. */
 	char				*file;
+
+	/** List of Data streams. */
+	struct kshark_stream_list	*streams;
 
 	/** Plugin Event handler. */
 	void				*handle;
@@ -165,16 +180,28 @@ struct kshark_plugin_list {
 	kshark_plugin_load_func		close;
 };
 
-int kshark_register_plugin(struct kshark_context *kshark_ctx,
-			   const char *file);
+struct kshark_plugin_list *
+kshark_register_plugin(struct kshark_context *kshark_ctx, const char *file);
 
 void kshark_unregister_plugin(struct kshark_context *kshark_ctx,
 			      const char *file);
 
 void kshark_free_plugin_list(struct kshark_plugin_list *plugins);
 
-int kshark_handle_plugins(struct kshark_context *kshark_ctx,
-			  enum kshark_plugin_actions  task_id);
+struct kshark_plugin_list *
+kshark_find_plugin(struct kshark_plugin_list *plugins, const char *file);
+
+void kshark_plugin_add_stream(struct kshark_plugin_list *plugin, int sd);
+
+void kshark_plugin_remove_stream(struct kshark_plugin_list *plugin, int sd);
+
+int kshark_handle_plugin(struct kshark_context *kshark_ctx,
+			 struct kshark_plugin_list *plugin,
+			 int sd,
+			 enum kshark_plugin_actions task_id);
+
+int kshark_handle_all_plugins(struct kshark_context *kshark_ctx, int sd,
+			      enum kshark_plugin_actions  task_id);
 
 #ifdef __cplusplus
 }

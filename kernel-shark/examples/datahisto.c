@@ -26,22 +26,22 @@ void dump_bin(struct kshark_trace_histo *histo, int bin,
 	printf("bin %i {\n", bin);
 	if (strcmp(type, "cpu") == 0) {
 		e_front = ksmodel_get_entry_front(histo, bin, true,
-						  kshark_match_cpu, sd, val,
+						  kshark_match_cpu, sd, &val,
 						  NULL,
 						  &i_front);
 
 		e_back = ksmodel_get_entry_back(histo, bin, true,
-						kshark_match_cpu, sd, val,
+						kshark_match_cpu, sd, &val,
 						NULL,
 						&i_back);
 	} else if (strcmp(type, "task") == 0) {
 		e_front = ksmodel_get_entry_front(histo, bin, true,
-						  kshark_match_pid, sd, val,
+						  kshark_match_pid, sd, &val,
 						  NULL,
 						  &i_front);
 
 		e_back = ksmodel_get_entry_back(histo, bin, true,
-						kshark_match_pid, sd, val,
+						kshark_match_pid, sd, &val,
 						NULL,
 						&i_back);
 	} else {

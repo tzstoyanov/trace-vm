@@ -93,6 +93,9 @@ public:
 
 	/** Table columns Identifiers. */
 	enum {
+		/** Identifier of the Data stream. */
+		TRACE_VIEW_STREAM_ID,
+
 		/** Identifier of the Index column. */
 		TRACE_VIEW_COL_INDEX,
 
@@ -192,8 +195,12 @@ public:
 	 */
 	int mapRowFromSource(int r) const
 	{
-		/*This works because the row number is shown in column "0". */
-		return this->data(this->index(r, 0)).toInt();
+		/*
+		 * This works because the row number is shown in column
+		 * TRACE_VIEW_COL_INDEX.
+		 */
+		int col = KsViewModel::TRACE_VIEW_COL_INDEX;
+		return this->data(this->index(r, col)).toInt();
 	}
 
 	/** Get the source model. */

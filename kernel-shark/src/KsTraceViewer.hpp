@@ -82,7 +82,7 @@ signals:
 	 * This signal is used to re-emitted the addTaskPlot signal of the
 	 * KsQuickContextMenu.
 	 */
-	void addTaskPlot(int pid);
+	void addTaskPlot(int sd, int pid);
 
 	/**
 	 * This signal is used to re-emitted the deselect signal of the

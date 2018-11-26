@@ -21,6 +21,31 @@
 #include "KsModels.hpp"
 #include "KsDualMarker.hpp"
 
+struct KsPerStreamPlots {
+	/** CPUs to be plotted. */
+	QVector<int>	_cpuList;
+	QVector<int>	_cpuPlotBase;
+
+	/** Tasks to be plotted. */
+	QVector<int>	_taskList;
+	QVector<int>	_taskPlotBase;
+};
+
+struct KsVirtComboPlot {
+
+	int	_hostStreamId;
+
+	int	_hostPid;
+
+	int	_guestStreamId;
+
+	int	_vcpu;
+
+	int	_hostBase;
+
+	int	_vcpuBase;
+};
+
 /**
  * The KsGLWidget class provides a widget for rendering OpenGL graphics used
  * to plot trace graphs.
@@ -69,23 +94,57 @@ public:
 	KsGraphModel *model() {return &_model;}
 
 	/** Get the number of CPU graphs. */
-	int cpuGraphCount() const {return _cpuList.count();}
+	int cpuGraphCount(int sd) const
+	{
+		auto it = _streamPlots.find(sd);
+		if (it != _streamPlots.end())
+			return it.value()._cpuList.count();
+		return 0;
+	}
 
 	/** Get the number of Task graphs. */
-	int taskGraphCount() const {return _taskList.count();}
+	int taskGraphCount(int sd) const
+	{
+		auto it = _streamPlots.find(sd);
+		if (it != _streamPlots.end())
+			return it.value()._taskList.count();
+		return 0;
+	}
 
 	/** Get the total number of graphs. */
-	int graphCount() const {return _cpuList.count() + _taskList.count();}
+	int graphCount(int sd) const
+	{
+		auto it = _streamPlots.find(sd);
+		if (it != _streamPlots.end())
+			return it.value()._taskList.count() +
+			       it.value()._cpuList.count();
+
+		return 0;
+	}
+
+	int totGraphCount() const
+	{
+		int count(0);
+
+		for (auto const &s: _streamPlots)
+			count += s._taskList.count() +
+				 s._cpuList.count();
+
+		return count;
+	}
+
+	int totComboGraphCount() const {return _comboPlots.count();}
 
 	/** Get the height of the widget. */
 	int height() const
 	{
-		return graphCount() * (KS_GRAPH_HEIGHT + _vSpacing) +
+		return totGraphCount() * (KS_GRAPH_HEIGHT + _vSpacing) +
+		       totComboGraphCount() * (KS_GRAPH_HEIGHT * 2 + _vSpacing) +
 		       _vMargin * 2;
 	}
 
 	/** Get the device pixel ratio. */
-	int dpr() const {return _dpr;}
+	int dpr()	const {return _dpr;}
 
 	/** Get the size of the horizontal margin space. */
 	int hMargin()	const {return _hMargin;}
@@ -96,24 +155,17 @@ public:
 	/** Get the size of the vertical spaceing between the graphs. */
 	int vSpacing()	const {return _vSpacing;}
 
-	void setMark(KsGraphMark *mark);
-
-	void findGraphIds(const kshark_entry &e,
-			  int *graphCPU,
-			  int *graphTask);
+	void setMarkPoints(const KsDataStore &data, KsGraphMark *mark);
 
 	bool find(const QPoint &point, int variance, bool joined,
 		  size_t *index);
 
-	int getPlotCPU(const QPoint &point);
+	bool getPlotInfo(const QPoint &point, int *sd, int *cpu, int *pid);
 
-	int getPlotPid(const QPoint &point);
+	/** CPUs to Tasks (per data stream) be plotted. */
+	QMap<int, KsPerStreamPlots>	_streamPlots;
 
-	/** CPUs to be plotted. */
-	QVector<int>	_cpuList;
-
-	/** Tasks to be plotted. */
-	QVector<int>	_taskList;
+	QVector<KsVirtComboPlot>	_comboPlots;
 
 signals:
 	/**
@@ -126,7 +178,7 @@ signals:
 	 * This signal is emitted when the mouse moves but there is no visible
 	 * KernelShark entry under the cursor.
 	 */
-	void notFound(uint64_t ts, int cpu, int pid);
+	void notFound(uint64_t ts, int sd, int cpu, int pid);
 
 	/** This signal is emitted when the Plus key is pressed. */
 	void zoomIn();
@@ -159,7 +211,9 @@ signals:
 	void updateView(size_t pos, bool mark);
 
 private:
-	QVector<KsPlot::Graph*>	_graphs;
+	QMap<int, QVector<KsPlot::Graph*>>	_graphs;
+
+	QVector<KsPlot::ComboGraph*>		_comboGraphs;
 
 	KsPlot::PlotObjList	_shapes;
 
@@ -189,13 +243,16 @@ private:
 
 	void _drawAxisX();
 
-	void _makeGraphs(QVector<int> cpuMask, QVector<int> taskMask);
+	void _makeGraphs();
 
-	KsPlot::Graph *_newCPUGraph(int cpu);
+	KsPlot::Graph *_newCPUGraph(int sd, int cpu);
 
-	KsPlot::Graph *_newTaskGraph(int pid);
+	KsPlot::Graph *_newTaskGraph(int sd, int pid);
 
-	void _makePluginShapes(QVector<int> cpuMask, QVector<int> taskMask);
+	KsPlot::ComboGraph *_newComboGraph(int sdHost, int pidHost,
+					   int sdGuest, int vcpu);
+
+	void _makePluginShapes();
 
 	int _posInRange(int x);
 
@@ -207,14 +264,16 @@ private:
 
 	bool _findAndSelect(QMouseEvent *event);
 
-	bool _find(int bin, int cpu, int pid,
+	bool _find(int bin, int sd, int cpu, int pid,
 		   int variance, bool joined, size_t *row);
 
-	int _getNextCPU(int pid, int bin);
+	int _getNextCPU(int sd, int pid, int bin);
 
-	int _getLastTask(struct kshark_trace_histo *histo, int bin, int cpu);
+	int _getLastTask(struct kshark_trace_histo *histo,
+			 int bin, int sd, int cpu);
 
-	int _getLastCPU(struct kshark_trace_histo *histo, int bin, int pid);
+	int _getLastCPU(struct kshark_trace_histo *histo,
+			int sd, int bin, int pid);
 
 	void _deselect();
 };

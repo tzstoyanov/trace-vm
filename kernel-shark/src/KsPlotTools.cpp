@@ -457,6 +457,8 @@ Mark::Mark()
 	_cpu._size = 5.5f;
 	_task._color = Color(0, 255, 0);
 	_task._size = 5.5f;
+	_combo._color = Color(225, 100, 255);
+	_combo._size = 5.5f;
 }
 
 void Mark::_draw(const Color &col, float size) const
@@ -464,6 +466,7 @@ void Mark::_draw(const Color &col, float size) const
 	drawLine(_a, _b, col, size);
 	_cpu.draw();
 	_task.draw();
+	_combo.draw();
 }
 
 /**
@@ -474,7 +477,7 @@ void Mark::_draw(const Color &col, float size) const
 void Mark::setDPR(int dpr)
 {
 	_size = 1.5 * dpr;
-	_task._size = _cpu._size = 1.5 + 4.0 * dpr;
+	_task._size = _cpu._size = _combo._size = 1.5 + 4.0 * dpr;
 }
 
 /**
@@ -488,6 +491,7 @@ void Mark::setX(int x)
 	_b.setX(x);
 	_cpu.setX(x);
 	_task.setX(x);
+	_combo.setX(x);
 }
 
 /**
@@ -530,6 +534,26 @@ void Mark::setCPUVisible(bool v)
 void Mark::setTaskY(int yTask)
 {
 	_task.setY(yTask);
+}
+
+/**
+ * @brief Set the visiblity of the Mark's Combo point.
+ *
+ * @param v: If True, the Task point will be visible.
+ */
+void Mark::setComboVisible(bool v)
+{
+	_combo._visible = v;
+}
+
+/**
+ * @brief Set the Y coordinates (vertical) of the Mark's Combo points.
+ *
+ * @param yCombo: Y coordinate of the Mark's Task point.
+ */
+void Mark::setComboY(int yCombo)
+{
+	_combo.setY(yCombo);
 }
 
 /**
@@ -577,7 +601,8 @@ Graph::Graph()
   _collectionPtr(nullptr),
   _binColors(nullptr),
   _ensembleColors(nullptr),
-  _zeroSuppress(false)
+  _zeroSuppress(false),
+  _drawBase(true)
 {}
 
 /**
@@ -592,10 +617,12 @@ Graph::Graph(kshark_trace_histo *histo, KsPlot::ColorTable *bct, KsPlot::ColorTa
   _bins(new(std::nothrow) Bin[histo->n_bins]),
   _size(histo->n_bins),
   _hMargin(30),
+  _height(50),
   _collectionPtr(nullptr),
   _binColors(bct),
   _ensembleColors(ect),
-  _zeroSuppress(false)
+  _zeroSuppress(false),
+  _drawBase(true)
 {
 	if (!_bins) {
 		_size = 0;
@@ -1082,7 +1109,6 @@ void Graph::fillTaskGraph(int sd, int pid)
 							 _collectionPtr,
 							 nullptr);
 			if (pidCpu0 < 0 && pidCpuLOB == pid) {
-
 				/*
 				 * The Task is the last one running on this
 				 * CPU. Set the Pid of the bin. In this case
@@ -1119,11 +1145,13 @@ void Graph::draw(float size)
 	int lastPid(-1), b(0), boxH(_height * .3);
 	Rectangle taskBox;
 
-	/*
-	 * Start by drawing a line between the base points of the first and
-	 * the last bin.
-	 */
-	drawLine(_bins[0]._base, _bins[_size - 1]._base, {}, size);
+	if (_drawBase) {
+		/*
+		 * Start by drawing a line between the base points of the first and
+		 * the last bin.
+		 */
+		drawLine(_bins[0]._base, _bins[_size - 1]._base, {}, size);
+	}
 
 	/* Draw as vartical lines all bins containing data. */
 	for (int i = 0; i < _size; ++i)
@@ -1211,6 +1239,243 @@ void Graph::draw(float size)
 				_bins[_size - 1]._base.y());
 		taskBox.draw();
 	}
+}
+
+ComboGraph::ComboGraph()
+: _histoPtr(nullptr),
+  _host(),
+  _guest()
+{
+	_init();
+}
+
+ComboGraph::ComboGraph(kshark_trace_histo *histo,
+		       KsPlot::ColorTable *bct,
+		       KsPlot::ColorTable *ect)
+: _histoPtr(histo),
+  _host(histo, bct, ect),
+  _guest(histo, bct, bct)
+{
+	_init();
+}
+
+void ComboGraph::_init()
+{
+	_guest.drawBase(false);
+	_guest.setZeroSuppressed(true);
+}
+
+/**
+ * @brief This function will set the Y (vertical) coordinate of the
+ *	  ComboGraph's base. It is safe to use this function even if the Graph
+ *	  contains data.
+ *
+ * @param b: Y coordinate of the Graph's base in pixels.
+ */
+void ComboGraph::setBase(int b)
+{
+	_guest.setBase(b);
+	_host.setBase(b + _host.height());
+}
+
+/**
+ * @brief Set the vertical size (height) of the ComboGraph.
+ *
+ * @param h: the height of the Graph in pixels.
+ */
+void ComboGraph::setHeight(int h)
+{
+	_host.setHeight(h / 2);
+	_guest.setHeight(h / 2);
+}
+
+void ComboGraph::fill(int sdHost, int pidHost, int sdGuest, int vcpu)
+{
+	kshark_context *kshark_ctx(nullptr);
+	struct kshark_data_stream *stream;
+	tep_event *event;
+
+	_sdHost = sdHost;
+	_pidHost = pidHost;
+	_vcpuEntryId = _vcpuExitId = -1;
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	stream = kshark_get_data_stream(kshark_ctx, sdHost);
+	if (!stream)
+		return;
+
+	event = tep_find_event_by_name(stream->pevent,
+				       "kvm", "kvm_entry");
+	if (event)
+		_vcpuEntryId = event->id;
+
+	event = tep_find_event_by_name(stream->pevent,
+				       "kvm", "kvm_exit");
+	if (event)
+		_vcpuExitId = event->id;
+
+	_host.fillTaskGraph(sdHost, pidHost);
+	_guest.fillCPUGraph(sdGuest, vcpu);
+}
+
+bool kshark_match_event_id(struct kshark_context *kshark_ctx,
+			   struct kshark_entry *e, int sd, int *values)
+{
+	return e->stream_id == sd &&
+	       e->pid == values[0] &&
+	       e->event_id == values[1];
+}
+
+struct VirtBridge : public Shape {
+
+	Point _entryPointHost, _exitPointHost;
+
+	Point _entryPointGuest, _exitPointGuest;
+
+	void _draw(const Color &col, float size) const;
+};
+
+void VirtBridge::_draw(const Color &col, float size) const
+{
+	drawLine(_entryPointHost, _entryPointGuest, _color, _size);
+	drawLine(_entryPointGuest, _exitPointGuest, _color, _size + 1);
+	drawLine(_exitPointGuest, _exitPointHost, _color, _size);
+}
+
+struct VirtGap : public Shape {
+
+	Point _exitPoint, _entryPoint;
+
+	int _height;
+	void _draw(const Color &col, float size) const;
+};
+
+void VirtGap::_draw(const Color &col, float size) const
+{
+	if (_entryPoint.x() - _exitPoint.x() < 4)
+		return;
+
+	Point p0(_exitPoint.x() + _size, _exitPoint.y());
+	Point p1(_exitPoint.x() + _size, _exitPoint.y() - _height);
+	Point p2(_entryPoint.x() - _size , _entryPoint.y() );
+	Point p3(_entryPoint.x() -_size , _entryPoint.y() - _height);
+
+	Rectangle gap;
+
+	gap.setPoint(0, p0);
+	gap.setPoint(1, p1);
+	gap.setPoint(2, p2);
+	gap.setPoint(3, p3);
+
+	gap._color = {255, 255, 255};
+	gap.setFill(false);
+	gap.draw();
+}
+
+void ComboGraph::_drawBridge()
+{
+	const kshark_entry *entry, *exit;
+	ssize_t indexEntry, indexExit;
+	int values[2] = {_pidHost, -1};
+	VirtBridge bridge;
+	VirtGap gap;
+
+	bridge._entryPointHost = bridge._entryPointGuest
+		= _guest.getBin(0)._base;
+	bridge._size = 2;
+	bridge._visible = false;
+
+	gap._exitPoint = _guest.getBin(0)._base;
+	gap._size = 2;
+	gap._height = 10;
+	gap._visible = false;
+
+	auto lamStartBridg = [&] (int bin) {
+		bridge._entryPointHost = _host.getBin(bin)._base;
+		bridge._entryPointGuest = _guest.getBin(bin)._base;
+		bridge._color = _host.getBin(bin)._color;
+		bridge._visible = true;
+	};
+
+	auto lamCloseBridg = [&] (int bin) {
+		bridge._exitPointGuest = _guest.getBin(bin)._base;
+		bridge._exitPointHost = _host.getBin(bin)._base;
+		bridge._color = _host.getBin(bin)._color;
+		bridge._visible = true;
+		bridge.draw();
+		bridge._visible = false;
+	};
+
+	auto lamStartGap = [&] (int bin) {
+		gap._exitPoint = _guest.getBin(bin)._base;
+		gap._visible = true;
+	};
+
+	auto lamCloseGap = [&] (int bin) {
+		gap._entryPoint = _guest.getBin(bin)._base;
+		gap._visible = true;
+		gap.draw();
+		gap._visible = false;
+	};
+
+	for (int bin = 0; bin < _histoPtr->n_bins; ++bin) {
+		values[1] = _vcpuEntryId;
+		entry = ksmodel_get_entry_back(_histoPtr, bin, true,
+					       kshark_match_event_id,
+					       _sdHost, values,
+					       nullptr, &indexEntry);
+
+		values[1] = _vcpuExitId;
+		exit = ksmodel_get_entry_back(_histoPtr, bin, true,
+					      kshark_match_event_id,
+					      _sdHost, values,
+					      nullptr, &indexExit);
+
+		if (entry && !exit) {
+			lamStartBridg(bin);
+			lamCloseGap(bin);
+		}
+
+		if (exit && !entry) {
+			lamCloseBridg(bin);
+			lamStartGap(bin);
+		}
+
+		if (exit && entry) {
+			if (bridge._visible)
+				lamCloseBridg(bin);
+
+			if (gap._visible)
+				lamCloseGap(bin);
+
+			if (indexEntry > indexExit) {
+				lamStartBridg(bin);
+			} else {
+				lamStartBridg(bin);
+				lamCloseBridg(bin);
+				lamStartGap(bin);
+			}
+		}
+	}
+
+	bridge._exitPointGuest = bridge._exitPointHost =
+		_guest.getBin(_histoPtr->n_bins - 1)._base;
+	bridge.draw();
+}
+
+void ComboGraph::draw(float size)
+{
+	_host.draw();
+	_guest.draw();
+	_drawBridge();
+}
+
+void ComboGraph::setHMargin(int hMargin)
+{
+	_host.setHMargin(hMargin);
+	_guest.setHMargin(hMargin);
 }
 
 }; // KsPlot

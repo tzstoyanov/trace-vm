@@ -87,6 +87,11 @@ struct kshark_task_list {
 	int			 pid;
 };
 
+/**
+ * Timestamp calibration function type. To be user for system clock calibration.
+ */
+typedef void (*time_calib_func) (struct kshark_entry *, int64_t *);
+
 /** tructure representing a stream of trace data. */
 struct kshark_data_stream {
 	/** Input handle for the trace data file. */
@@ -103,6 +108,9 @@ struct kshark_data_stream {
 
 	/** The size of the array of time calibration constants. */
 	size_t			calib_array_size;
+
+	/** System clock calibration function. */
+	time_calib_func		calib;
 
 	/** Hash table of task PIDs. */
 	struct kshark_task_list	**tasks;
@@ -176,6 +184,9 @@ int *kshark_all_streams(struct kshark_context *kshark_ctx);
 ssize_t kshark_load_data_entries(struct kshark_context *kshark_ctx, int sd,
 				 struct kshark_entry ***data_rows);
 
+ssize_t kshark_load_all_data_entries(struct kshark_context *kshark_ctx,
+				     struct kshark_entry ***data_rows);
+
 ssize_t kshark_load_data_records(struct kshark_context *kshark_ctx, int sd,
 				 struct tep_record ***data_rows);
 
@@ -183,6 +194,8 @@ ssize_t kshark_get_task_pids(struct kshark_context *kshark_ctx, int sd,
 			     int **pids);
 
 void kshark_close(struct kshark_context *kshark_ctx, int sd);
+
+void kshark_close_all(struct kshark_context *kshark_ctx);
 
 void kshark_free(struct kshark_context *kshark_ctx);
 
@@ -300,9 +313,12 @@ void kshark_filter_clear(struct kshark_context *kshark_ctx, int sd,
 
 bool kshark_filter_is_set(struct kshark_context *kshark_ctx, int sd);
 
-void kshark_filter_entries(struct kshark_context *kshark_ctx, int sd,
-			   struct kshark_entry **data,
-			   size_t n_entries);
+void kshark_filter_stream_entries(struct kshark_context *kshark_ctx, int sd,
+				  struct kshark_entry **data,
+				  size_t n_entries);
+
+void kshark_filter_all_entries(struct kshark_context *kshark_ctx,
+			       struct kshark_entry **data, size_t n_entries);
 
 void kshark_clear_all_filters(struct kshark_context *kshark_ctx,
 			      struct kshark_entry **data,
@@ -338,10 +354,13 @@ ssize_t kshark_find_record_by_time(uint64_t time,
 				   size_t l, size_t h);
 
 bool kshark_match_pid(struct kshark_context *kshark_ctx,
-		      struct kshark_entry *e, int sd, int pid);
+		      struct kshark_entry *e, int sd, int *pid);
 
 bool kshark_match_cpu(struct kshark_context *kshark_ctx,
-		      struct kshark_entry *e, int sd, int cpu);
+		      struct kshark_entry *e, int sd, int *cpu);
+
+bool kshark_match_event_id(struct kshark_context *kshark_ctx,
+			   struct kshark_entry *e, int sd, int *event_id);
 
 /**
  * Empty bin identifier.
@@ -359,7 +378,7 @@ bool kshark_match_cpu(struct kshark_context *kshark_ctx,
 /** Matching condition function type. To be user for data requests */
 typedef bool (matching_condition_func)(struct kshark_context*,
 				       struct kshark_entry*,
-				       int, int);
+				       int, int*);
 
 /**
  * Data request structure, defining the properties of the required
@@ -387,7 +406,7 @@ struct kshark_entry_request {
 	/**
 	 * Matching condition value, used by the Matching condition function.
 	 */
-	int val;
+	int *values;
 
 	/** If true, a visible entry is requested. */
 	bool vis_only;
@@ -401,7 +420,7 @@ struct kshark_entry_request {
 
 struct kshark_entry_request *
 kshark_entry_request_alloc(size_t first, size_t n,
-			   matching_condition_func cond, int sd, int val,
+			   matching_condition_func cond, int sd, int *values,
 			   bool vis_only, int vis_mask);
 
 void kshark_free_entry_request(struct kshark_entry_request *req);
@@ -416,22 +435,19 @@ kshark_get_entry_back(const struct kshark_entry_request *req,
 		      struct kshark_entry **data,
 		      ssize_t *index);
 
-/**
- * Timestamp calibration function type. To be user for merging data streams.
- */
-typedef void (*time_calib_func) (struct kshark_entry *, int64_t *);
+void kshark_offset_calib(struct kshark_entry *e, int64_t *atgv);
+
+void kshark_linear_clock_calib(struct kshark_entry *e, int64_t *atgv);
 
 struct kshark_entry **kshark_data_merge(struct kshark_entry **prior_data,
 					size_t prior_size,
 					struct kshark_entry **associated_data,
-					size_t associated_size,
-					time_calib_func calib,
-					int64_t *argv);
+					size_t associated_size);
 
 /**
  * Data collections are used to optimize the search for an entry having an
- * abstract property, defined by a Matching condition function and a value.
- * When a collection is processed, the data which is relevant for the
+ * abstract property, defined by a Matching condition function and an array of
+ * values. When a collection is processed, the data which is relevant for the
  * collection is enclosed in "Data intervals", defined by pairs of "Resume" and
  * "Break" points. It is guaranteed that the data outside of the intervals
  * contains no entries satisfying the abstract matching condition. However, the
@@ -449,13 +465,15 @@ struct kshark_entry_collection {
 	matching_condition_func *cond;
 
 	/** Data stream identifier. */
-	int sd;
+	int stream_id;
 
 	/**
-	 * Matching condition value, used by the Matching condition finction
-	 * to define the collections.
+	 * Array of matching condition values, used by the Matching condition
+	 * finction to define the collection.
 	 */
-	int val;
+	int *values;
+
+	int n_val;
 
 	/**
 	 * Array of indexes defining the beginning of each individual data
@@ -478,23 +496,24 @@ kshark_add_collection_to_list(struct kshark_context *kshark_ctx,
 			      struct kshark_entry **data,
 			      size_t n_rows,
 			      matching_condition_func cond,
-			      int sd, int val,
+			      int sd, int *values, size_t n_val,
 			      size_t margin);
 
 struct kshark_entry_collection *
 kshark_register_data_collection(struct kshark_context *kshark_ctx,
 				struct kshark_entry **data, size_t n_rows,
-				matching_condition_func cond, int sd, int val,
+				matching_condition_func cond,
+				int sd, int *values, size_t n_val,
 				size_t margin);
 
 void kshark_unregister_data_collection(struct kshark_entry_collection **col,
 				       matching_condition_func cond,
-				       int sd, int val);
+				       int sd, int *values, size_t n_val);
 
 struct kshark_entry_collection *
 kshark_find_data_collection(struct kshark_entry_collection *col,
 			    matching_condition_func cond,
-			    int sd, int val);
+			    int sd, int *values, size_t n_val);
 
 void kshark_reset_data_collection(struct kshark_entry_collection *col);
 
@@ -684,12 +703,12 @@ kshark_export_dstream(struct kshark_context *kshark_ctx, int sd,
 		      enum kshark_config_formats format);
 
 int kshark_import_dstream(struct kshark_context *kshark_ctx,
-			  struct kshark_config_doc *conf,
+			  struct kshark_config_doc *conf/*,
 			  struct kshark_entry ***data_rows,
-			  size_t *data_size);
+			  size_t *data_size*/);
 
 bool kshark_export_all_dstreams(struct kshark_context *kshark_ctx,
-				struct kshark_config_doc *conf);
+				struct kshark_config_doc **conf);
 
 bool kshark_import_all_dstreams(struct kshark_context *kshark_ctx,
 				struct kshark_config_doc *conf,

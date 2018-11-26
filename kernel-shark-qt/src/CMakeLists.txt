@@ -28,69 +28,69 @@ if (OPENGL_FOUND AND GLUT_FOUND)
 
 endif (OPENGL_FOUND AND GLUT_FOUND)
 
-# if (Qt5Widgets_FOUND AND Qt5Network_FOUND)
+if (Qt5Widgets_FOUND AND Qt5Network_FOUND)
+
+    message(STATUS "libkshark-gui")
+    set (ks-guiLib_hdr  KsUtils.hpp
+                        KsModels.hpp
+                        KsGLWidget.hpp
+                        KsDualMarker.hpp
+                        KsWidgetsLib.hpp
+                        KsTraceGraph.hpp
+                        KsTraceViewer.hpp
+                        KsMainWindow.hpp
+                        KsCaptureDialog.hpp
+                        KsQuickContextMenu.hpp
+                        KsAdvFilteringDialog.hpp)
 # 
-#     message(STATUS "libkshark-gui")
-#     set (ks-guiLib_hdr  KsUtils.hpp
-#                         KsModels.hpp
-#                         KsGLWidget.hpp
-#                         KsDualMarker.hpp
-#                         KsWidgetsLib.hpp
-#                         KsTraceGraph.hpp
-#                         KsTraceViewer.hpp
-#                         KsMainWindow.hpp
-#                         KsCaptureDialog.hpp
-#                         KsQuickContextMenu.hpp
-#                         KsAdvFilteringDialog.hpp)
+    QT5_WRAP_CPP(ks-guiLib_hdr_moc ${ks-guiLib_hdr})
+
+    add_library(kshark-gui  SHARED  ${ks-guiLib_hdr_moc}    KsUtils.cpp
+                                                            KsModels.cpp
+                                                            KsSession.cpp
+                                                            KsGLWidget.cpp
+                                                            KsDualMarker.cpp
+                                                            KsWidgetsLib.cpp
+                                                            KsTraceGraph.cpp
+                                                            KsTraceViewer.cpp
+                                                            KsMainWindow.cpp
+                                                            KsCaptureDialog.cpp
+                                                            KsQuickContextMenu.cpp
+                                                            KsAdvFilteringDialog.cpp)
 # 
-#     QT5_WRAP_CPP(ks-guiLib_hdr_moc ${ks-guiLib_hdr})
-# 
-#     add_library(kshark-gui  SHARED  ${ks-guiLib_hdr_moc}    KsUtils.cpp
-#                                                             KsModels.cpp
-#                                                             KsSession.cpp
-#                                                             KsGLWidget.cpp
-#                                                             KsDualMarker.cpp
-#                                                             KsWidgetsLib.cpp
-#                                                             KsTraceGraph.cpp
-#                                                             KsTraceViewer.cpp
-#                                                             KsMainWindow.cpp
-#                                                             KsCaptureDialog.cpp
-#                                                             KsQuickContextMenu.cpp
-#                                                             KsAdvFilteringDialog.cpp)
-# 
-#     target_link_libraries(kshark-gui kshark-plot
-#                                      ${CMAKE_DL_LIBS}
-#                                      ${TRACEEVENT_LIBRARY}
-#                                      ${TRACECMD_LIBRARY}
-#                                      Qt5::Widgets
-#                                      Qt5::Network)
-# 
-#     set_target_properties(kshark-gui PROPERTIES  SUFFIX ".so.${KS_VERSION_STRING}")
-# 
-#     message(STATUS "kernelshark")
-#     add_executable(kernelshark          kernelshark.cpp)
-#     target_link_libraries(kernelshark   kshark-gui)
-# 
-#     message(STATUS "kshark-record")
-#     add_executable(kshark-record        kshark-record.cpp)
-#     target_link_libraries(kshark-record kshark-gui)
-# 
-#     install(TARGETS kernelshark kshark-record kshark kshark-plot kshark-gui
-#             RUNTIME DESTINATION /usr/local/bin/
-#             LIBRARY DESTINATION /usr/local/lib/kshark/)
-# 
-#     install(FILES "${KS_DIR}/kernelshark.desktop"
-#             DESTINATION /usr/share/applications/)
-# 
-#     install(FILES "${KS_DIR}/org.freedesktop.kshark-record.policy"
-#             DESTINATION /usr/share/polkit-1/actions/)
-# 
-#     install(PROGRAMS "${KS_DIR}/bin/kshark-su-record"
-#             DESTINATION /usr/local/bin/)
-# 
-# endif (Qt5Widgets_FOUND AND Qt5Network_FOUND)
-# 
-# add_subdirectory(plugins)
+    target_link_libraries(kshark-gui kshark-plot
+                                     ${CMAKE_DL_LIBS}
+                                     ${TRACEEVENT_LIBRARY}
+                                     ${TRACECMD_LIBRARY}
+                                     Qt5::Widgets
+                                     Qt5::Network)
+
+    set_target_properties(kshark-gui PROPERTIES  SUFFIX ".so.${KS_VERSION_STRING}")
+
+    message(STATUS "kernelshark")
+    add_executable(kernelshark          kernelshark.cpp)
+    target_link_libraries(kernelshark   kshark-gui)
+
+    message(STATUS "kshark-record")
+    add_executable(kshark-record        kshark-record.cpp)
+    target_link_libraries(kshark-record kshark-gui)
+
+    install(TARGETS kernelshark kshark-record kshark kshark-plot kshark-gui
+            RUNTIME DESTINATION /usr/local/bin/
+            LIBRARY DESTINATION /usr/local/lib/kshark/)
+
+    install(FILES "${KS_DIR}/kernelshark.desktop"
+            DESTINATION /usr/share/applications/)
+
+    install(FILES "${KS_DIR}/org.freedesktop.kshark-record.policy"
+            DESTINATION /usr/share/polkit-1/actions/)
+
+    install(PROGRAMS "${KS_DIR}/bin/kshark-su-record"
+            DESTINATION /usr/local/bin/)
+
+endif (Qt5Widgets_FOUND AND Qt5Network_FOUND)
+
+add_subdirectory(plugins)
 
 find_program(DO_AS_ROOT pkexec)
 

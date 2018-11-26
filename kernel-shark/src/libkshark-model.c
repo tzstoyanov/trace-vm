@@ -478,7 +478,6 @@ void ksmodel_shift_forward(struct kshark_trace_histo *histo, size_t n)
 
 	/* Set the new Lower Overflow bin. */
 	ksmodel_set_lower_edge(histo);
-
 	/*
 	 * Copy the the mapping indexes of all overlaping bins starting from
 	 * bin "0" of the new histo. Note that the number of overlaping bins
@@ -778,7 +777,7 @@ static struct kshark_entry_request *
 ksmodel_entry_front_request_alloc(struct kshark_trace_histo *histo,
 				  int bin, bool vis_only,
 				  matching_condition_func func,
-				  int sd, int val)
+				  int sd, int *values)
 {
 	size_t first, n;
 
@@ -790,7 +789,7 @@ ksmodel_entry_front_request_alloc(struct kshark_trace_histo *histo,
 	first = ksmodel_first_index_at_bin(histo, bin);
 
 	return kshark_entry_request_alloc(first, n,
-					  func, sd, val,
+					  func, sd, values,
 					  vis_only, KS_GRAPH_VIEW_FILTER_MASK);
 }
 
@@ -798,7 +797,7 @@ static struct kshark_entry_request *
 ksmodel_entry_back_request_alloc(struct kshark_trace_histo *histo,
 				 int bin, bool vis_only,
 				 matching_condition_func func,
-				 int sd, int val)
+				 int sd, int *values)
 {
 	size_t first, n;
 
@@ -810,7 +809,7 @@ ksmodel_entry_back_request_alloc(struct kshark_trace_histo *histo,
 	first = ksmodel_last_index_at_bin(histo, bin);
 
 	return kshark_entry_request_alloc(first, n,
-					  func, sd, val,
+					  func, sd, values,
 					  vis_only, KS_GRAPH_VIEW_FILTER_MASK);
 }
 
@@ -903,7 +902,7 @@ ssize_t ksmodel_first_index_at_pid(struct kshark_trace_histo *histo,
 const struct kshark_entry *
 ksmodel_get_entry_front(struct kshark_trace_histo *histo,
 			int bin, bool vis_only,
-			matching_condition_func func, int sd, int val,
+			matching_condition_func func, int sd, int *values,
 			struct kshark_entry_collection *col,
 			ssize_t *index)
 {
@@ -915,7 +914,7 @@ ksmodel_get_entry_front(struct kshark_trace_histo *histo,
 
 	/* Set the position at the beginning of the bin and go forward. */
 	req = ksmodel_entry_front_request_alloc(histo, bin, vis_only,
-							    func, sd, val);
+							    func, sd, values);
 	if (!req)
 		return NULL;
 
@@ -951,7 +950,7 @@ ksmodel_get_entry_front(struct kshark_trace_histo *histo,
 const struct kshark_entry *
 ksmodel_get_entry_back(struct kshark_trace_histo *histo,
 		       int bin, bool vis_only,
-		       matching_condition_func func, int sd, int val,
+		       matching_condition_func func, int sd, int *values,
 		       struct kshark_entry_collection *col,
 		       ssize_t *index)
 {
@@ -963,7 +962,7 @@ ksmodel_get_entry_back(struct kshark_trace_histo *histo,
 
 	/* Set the position at the end of the bin and go backwards. */
 	req = ksmodel_entry_back_request_alloc(histo, bin, vis_only,
-							   func, sd, val);
+							   func, sd, values);
 	if (!req)
 		return NULL;
 
@@ -1022,7 +1021,7 @@ int ksmodel_get_pid_front(struct kshark_trace_histo *histo,
 		return KS_EMPTY_BIN;
 
 	entry = ksmodel_get_entry_front(histo, bin, vis_only,
-					       kshark_match_cpu, sd, cpu,
+					       kshark_match_cpu, sd, &cpu,
 					       col, index);
 
 	return ksmodel_get_entry_pid(entry);
@@ -1056,7 +1055,7 @@ int ksmodel_get_pid_back(struct kshark_trace_histo *histo,
 		return KS_EMPTY_BIN;
 
 	entry = ksmodel_get_entry_back(histo, bin, vis_only,
-					      kshark_match_cpu, sd, cpu,
+					      kshark_match_cpu, sd, &cpu,
 					      col, index);
 
 	return ksmodel_get_entry_pid(entry);
@@ -1106,7 +1105,7 @@ int ksmodel_get_cpu_front(struct kshark_trace_histo *histo,
 		return KS_EMPTY_BIN;
 
 	entry = ksmodel_get_entry_front(histo, bin, vis_only,
-					       kshark_match_pid, sd, pid,
+					       kshark_match_pid, sd, &pid,
 					       col,
 					       index);
 	return ksmodel_get_entry_cpu(entry);
@@ -1140,7 +1139,7 @@ int ksmodel_get_cpu_back(struct kshark_trace_histo *histo,
 		return KS_EMPTY_BIN;
 
 	entry = ksmodel_get_entry_back(histo, bin, vis_only,
-					      kshark_match_pid, sd, pid,
+					      kshark_match_pid, sd, &pid,
 					      col,
 					      index);
 
@@ -1174,7 +1173,7 @@ bool ksmodel_cpu_visible_event_exist(struct kshark_trace_histo *histo,
 	/* Set the position at the beginning of the bin and go forward. */
 	req = ksmodel_entry_front_request_alloc(histo,
 						bin, true,
-						kshark_match_cpu, sd, cpu);
+						kshark_match_cpu, sd, &cpu);
 	if (!req)
 		return false;
 
@@ -1228,7 +1227,7 @@ bool ksmodel_task_visible_event_exist(struct kshark_trace_histo *histo,
 	/* Set the position at the beginning of the bin and go forward. */
 	req = ksmodel_entry_front_request_alloc(histo,
 						bin, true,
-						kshark_match_pid, sd, pid);
+						kshark_match_pid, sd, &pid);
 	if (!req)
 		return false;
 
@@ -1256,15 +1255,15 @@ bool ksmodel_task_visible_event_exist(struct kshark_trace_histo *histo,
 }
 
 static bool match_cpu_missed_events(struct kshark_context *kshark_ctx,
-				    struct kshark_entry *e, int sd, int cpu)
+				    struct kshark_entry *e, int sd, int *cpu)
 {
-	return e->event_id == -EOVERFLOW && e->cpu == cpu && e->stream_id == sd;
+	return e->event_id == -EOVERFLOW && e->cpu == *cpu && e->stream_id == sd;
 }
 
 static bool match_pid_missed_events(struct kshark_context *kshark_ctx,
-				    struct kshark_entry *e, int sd, int pid)
+				    struct kshark_entry *e, int sd, int *pid)
 {
-	return e->event_id == -EOVERFLOW && e->pid == pid && e->stream_id == sd;
+	return e->event_id == -EOVERFLOW && e->pid == *pid && e->stream_id == sd;
 }
 
 /**
@@ -1288,7 +1287,7 @@ ksmodel_get_cpu_missed_events(struct kshark_trace_histo *histo,
 			      ssize_t *index)
 {
 	return ksmodel_get_entry_front(histo, bin, true,
-				       match_cpu_missed_events, sd, cpu,
+				       match_cpu_missed_events, sd, &cpu,
 				       col, index);
 }
 
@@ -1313,6 +1312,6 @@ ksmodel_get_task_missed_events(struct kshark_trace_histo *histo,
 			       ssize_t *index)
 {
 	return ksmodel_get_entry_front(histo, bin, true,
-				       match_pid_missed_events, sd, pid,
+				       match_pid_missed_events, sd, &pid,
 				       col, index);
 }

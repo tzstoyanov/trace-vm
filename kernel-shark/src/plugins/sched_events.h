@@ -64,22 +64,25 @@ struct plugin_sched_context {
 	struct tracecmd_filter_id	*second_pass_hash;
 };
 
-int plugin_get_next_pid(struct tep_record *record);
+struct plugin_sched_context *get_sched_context(int sd);
+
+int plugin_get_next_pid(struct tep_record *record, int sd);
 
 bool plugin_wakeup_match_rec_pid(struct kshark_context *kshark_ctx,
-				 struct kshark_entry *e, int pid);
+				 struct kshark_entry *e, int sd, int *pid);
 
 bool plugin_switch_match_rec_pid(struct kshark_context *kshark_ctx,
-				 struct kshark_entry *e, int pid);
+				 struct kshark_entry *e, int sd, int *pid);
 
 bool plugin_switch_match_entry_pid(struct kshark_context *kshark_ctx,
 				   struct kshark_entry *e,
-				   int pid);
+				   int sd, int *pid);
 
 bool plugin_match_pid(struct kshark_context *kshark_ctx,
-		      struct kshark_entry *e, int pid);
+		      struct kshark_entry *e, int sd, int *pid);
 
-void plugin_draw(struct kshark_cpp_argv *argv, int pid, int draw_action);
+void plugin_draw(struct kshark_cpp_argv *argv, int sd, int pid,
+		 int draw_action);
 
 #ifdef __cplusplus
 }

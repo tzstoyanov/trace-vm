@@ -82,7 +82,7 @@ std::chrono::high_resolution_clock::now() - t0).count()
 
 namespace KsUtils {
 
-QVector<int> getPidList();
+QVector<int> getPidList(int sd);
 
 QVector<int> getFilterIds(tracecmd_filter_id *filter);
 
@@ -110,7 +110,23 @@ inline QString Ts2String(int64_t ts, int prec)
 }
 
 bool matchCPUVisible(struct kshark_context *kshark_ctx,
-			      struct kshark_entry *e, int cpu);
+		     struct kshark_entry *e, int sd, int *cpu);
+
+void setElidedText(QLabel* label, QString text,
+		   enum Qt::TextElideMode mode,
+		   int labelWidth);
+
+
+#define KS_STREAM_COLOR_LIGHTNESS 30
+
+inline QColor getStreamColor(int sd)
+{
+	QColor col(Qt::GlobalColor(Qt::red + sd));
+	col.setAlpha(KS_STREAM_COLOR_LIGHTNESS);
+
+	return col;
+}
+
 }; // KsUtils
 
 /** Identifier of the Dual Marker active state. */
@@ -131,18 +147,23 @@ public:
 
 	~KsDataStore();
 
-	void loadDataFile(const QString &file);
+	int loadDataFile(const QString &file);
+
+	int appendDataFile(const QString &file, int64_t shift);
 
 	void clear();
 
-	/** Get the trace event parser. */
-	tep_handle *tep() const {return _tep;}
+	tep_handle *tep(int sd) const;
 
-	/** Get the trace data array.. */
+	/** Get the trace data array. */
 	struct kshark_entry **rows() const {return _rows;}
+
+	struct kshark_entry ***rows_r() {return &_rows;}
 
 	/** Get the size of the data array. */
 	size_t size() const {return _dataSize;}
+
+	size_t *size_r() {return &_dataSize;}
 
 	void reload();
 
@@ -150,17 +171,17 @@ public:
 
 	void registerCPUCollections();
 
-	void applyPosTaskFilter(QVector<int>);
+	void applyPosTaskFilter(int sd, QVector<int> vec);
 
-	void applyNegTaskFilter(QVector<int>);
+	void applyNegTaskFilter(int sd, QVector<int> vec);
 
-	void applyPosEventFilter(QVector<int>);
+	void applyPosEventFilter(int sd, QVector<int> vec);
 
-	void applyNegEventFilter(QVector<int>);
+	void applyNegEventFilter(int sd, QVector<int> vec);
 
-	void applyPosCPUFilter(QVector<int>);
+	void applyPosCPUFilter(int sd, QVector<int> vec);
 
-	void applyNegCPUFilter(QVector<int>);
+	void applyNegCPUFilter(int sd, QVector<int> vec);
 
 	void clearAllFilters();
 
@@ -172,26 +193,29 @@ signals:
 	void updateWidgets(KsDataStore *);
 
 private:
-	/** Page event used to parse the page. */
-	tep_handle		*_tep;
-
 	/** Trace data array. */
 	struct kshark_entry	**_rows;
 
 	/** The size of the data array. */
 	size_t			_dataSize;
 
+	int _openDataFile(kshark_context *kshark_ctx, const QString &file);
+
 	void _freeData();
+
 	void _unregisterCPUCollections();
-	void _applyIdFilter(int filterId, QVector<int> vec);
+
+	void _applyIdFilter(int filterId, QVector<int> vec, int sd);
 };
 
-/** A Plugin Manage class. */
+/** A Plugin Manager class. */
 class KsPluginManager : public QObject
 {
 	Q_OBJECT
 public:
 	explicit KsPluginManager(QWidget *parent = nullptr);
+
+	 ~KsPluginManager();
 
 	/** A list of available built-in plugins. */
 	QStringList	_ksPluginList;
@@ -214,12 +238,14 @@ public:
 	void addPlugins(const QStringList &fileNames);
 
 	void unloadAll();
+	void unload(int sd);
 
-	void updatePlugins(QVector<int> pluginId);
+	void updatePlugins(int sd, QVector<int> pluginId);
+	void updatePlugins_hack(int sd, QVector<int> pluginIds);
 
 signals:
 	/** This signal is emitted when a plugin is loaded or unloaded. */
-	void dataReload();
+	void dataReload(int sd);
 
 private:
 	void _parsePluginList();

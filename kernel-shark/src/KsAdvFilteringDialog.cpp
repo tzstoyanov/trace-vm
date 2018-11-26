@@ -24,6 +24,7 @@ KsAdvFilteringDialog::KsAdvFilteringDialog(QWidget *parent)
   _sysEvLabel("System/Event: ", &_condToolBar1),
   _opsLabel("Operator: ", this),
   _fieldLabel("Field: ", this),
+  _streamComboBox(&_condToolBar1),
   _systemComboBox(&_condToolBar1),
   _eventComboBox(&_condToolBar1),
   _opsComboBox(&_condToolBar2),
@@ -71,13 +72,14 @@ KsAdvFilteringDialog::KsAdvFilteringDialog(QWidget *parent)
 
 	lamAddLine();
 
-	_getFilters(kshark_ctx);
+	_getFilters();
 
 	if (_filters.count()) {
-		_makeFilterTable(kshark_ctx);
+		_makeFilterTable();
 		lamAddLine();
 	}
 
+	_condToolBar1.addWidget(&_streamComboBox);
 	_condToolBar1.addWidget(&_sysEvLabel);
 	_condToolBar1.addWidget(&_systemComboBox);
 	_condToolBar1.addWidget(&_eventComboBox);
@@ -86,13 +88,16 @@ KsAdvFilteringDialog::KsAdvFilteringDialog(QWidget *parent)
 	 * Using the old Signal-Slot syntax because QComboBox::currentIndexChanged
 	 * has overloads.
 	 */
+	connect(&_streamComboBox,	SIGNAL(currentIndexChanged(const QString&)),
+		this,			SLOT(_streamChanged(const QString&)));
+
 	connect(&_systemComboBox,	SIGNAL(currentIndexChanged(const QString&)),
 		this,			SLOT(_systemChanged(const QString&)));
 
 	connect(&_eventComboBox,	SIGNAL(currentIndexChanged(const QString&)),
 		this,			SLOT(_eventChanged(const QString&)));
 
-	_setSystemCombo(kshark_ctx);
+	_setSystemCombo();
 
 	_condToolBar1.addSeparator();
 	_condToolBar1.addWidget(&_insertEvtButton);
@@ -149,15 +154,15 @@ KsAdvFilteringDialog::KsAdvFilteringDialog(QWidget *parent)
 		this,			&QWidget::close);
 }
 
-void KsAdvFilteringDialog::_setSystemCombo(struct kshark_context *kshark_ctx)
+void KsAdvFilteringDialog::_setSystemCombo()
 {
 	QStringList sysList;
 	tep_event **events;
 	int i(0), nEvts(0);
 
-	if (kshark_ctx->pevent) {
-		nEvts = tep_get_events_count(kshark_ctx->pevent);
-		events = tep_list_events(kshark_ctx->pevent,
+	if (_stream->pevent) {
+		nEvts = tep_get_events_count(_stream->pevent);
+		events = tep_list_events(_stream->pevent,
 					 TEP_EVENT_SORT_SYSTEM);
 	}
 
@@ -202,15 +207,15 @@ QStringList KsAdvFilteringDialog::_operators()
 	return OpsList;
 }
 
-void KsAdvFilteringDialog::_getFilters(struct kshark_context *kshark_ctx)
+void KsAdvFilteringDialog::_getFilters()
 {
 	tep_event **events;
 	char *str;
 
-	events = tep_list_events(kshark_ctx->pevent, TEP_EVENT_SORT_SYSTEM);
+	events = tep_list_events(_stream->pevent, TEP_EVENT_SORT_SYSTEM);
 
 	for (int i = 0; events[i]; i++) {
-		str = tep_filter_make_string(kshark_ctx->advanced_event_filter,
+		str = tep_filter_make_string(_stream->advanced_event_filter,
 					     events[i]->id);
 		if (!str)
 			continue;
@@ -223,7 +228,7 @@ void KsAdvFilteringDialog::_getFilters(struct kshark_context *kshark_ctx)
 	}
 }
 
-void KsAdvFilteringDialog::_makeFilterTable(struct kshark_context *kshark_ctx)
+void KsAdvFilteringDialog::_makeFilterTable()
 {
 	QMapIterator<int, QString> f(_filters);
 	QTableWidgetItem *i1, *i2, *i3;
@@ -272,19 +277,20 @@ void KsAdvFilteringDialog::_help()
 	}
 }
 
+void KsAdvFilteringDialog::_streamChanged(const QString &sysName)
+{
+	
+}
+
 void KsAdvFilteringDialog::_systemChanged(const QString &sysName)
 {
-	kshark_context *kshark_ctx(NULL);
 	QStringList evtsList;
 	tep_event **events;
 	int i, nEvts;
 
 	_eventComboBox.clear();
-	if (!kshark_instance(&kshark_ctx) || !kshark_ctx->pevent)
-		return;
-
-	nEvts = tep_get_events_count(kshark_ctx->pevent);
-	events = tep_list_events(kshark_ctx->pevent, TEP_EVENT_SORT_SYSTEM);
+	nEvts = tep_get_events_count(_stream->pevent);
+	events = tep_list_events(_stream->pevent, TEP_EVENT_SORT_SYSTEM);
 
 	for (i = 0; i < nEvts; ++i) {
 		if (sysName == events[i]->system)
@@ -317,17 +323,13 @@ KsAdvFilteringDialog::_getEventFormatFields(struct tep_event *event)
 void KsAdvFilteringDialog::_eventChanged(const QString &evtName)
 {
 	QString sysName = _systemComboBox.currentText();
-	kshark_context *kshark_ctx(NULL);
 	QStringList fieldList;
 	tep_event **events;
 	int nEvts;
 
 	_fieldComboBox.clear();
-	if (!kshark_instance(&kshark_ctx) || !kshark_ctx->pevent)
-		return;
-
-	nEvts = tep_get_events_count(kshark_ctx->pevent);
-	events = tep_list_events(kshark_ctx->pevent, TEP_EVENT_SORT_SYSTEM);
+	nEvts = tep_get_events_count(_stream->pevent);
+	events = tep_list_events(_stream->pevent, TEP_EVENT_SORT_SYSTEM);
 
 	for (int i = 0; i < nEvts; ++i) {
 		if (evtName == events[i]->name &&
@@ -383,19 +385,15 @@ void KsAdvFilteringDialog::_insertField()
 void KsAdvFilteringDialog::_applyPress()
 {
 	QMapIterator<int, QString> f(_filters);
-	kshark_context *kshark_ctx(NULL);
 	const char *text;
 	tep_errno ret;
 	char *filter;
 	int i(0);
 
-	if (!kshark_instance(&kshark_ctx))
-		return;
-
 	while (f.hasNext()) {
 		f.next();
 		if (_table->_cb[i]->checkState() == Qt::Checked) {
-			tep_filter_remove_event(kshark_ctx->advanced_event_filter,
+			tep_filter_remove_event(_stream->advanced_event_filter,
 						f.key());
 		}
 		++i;
@@ -419,14 +417,14 @@ void KsAdvFilteringDialog::_applyPress()
 	filter = (char*) malloc(strlen(text) + 1);
 	strcpy(filter, text);
 
-	ret = tep_filter_add_filter_str(kshark_ctx->advanced_event_filter,
-					   filter);
+	ret = tep_filter_add_filter_str(_stream->advanced_event_filter,
+					filter);
 
 	if (ret < 0) {
 		char error_str[200];
 
-		tep_strerror(kshark_ctx->pevent, ret, error_str,
-						       sizeof(error_str));
+		tep_strerror(_stream->pevent, ret, error_str,
+						   sizeof(error_str));
 
 		fprintf(stderr, "filter failed due to: %s\n", error_str);
 		free(filter);

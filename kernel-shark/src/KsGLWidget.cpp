@@ -22,6 +22,7 @@
 /** Create a default (empty) OpenGL widget. */
 KsGLWidget::KsGLWidget(QWidget *parent)
 : QOpenGLWidget(parent),
+//   _sd(sd),
   _hMargin(20),
   _vMargin(30),
   _vSpacing(20),
@@ -91,12 +92,17 @@ void KsGLWidget::paintGL()
 		_drawAxisX();
 
 	/* Process and draw all graphs by using the built-in logic. */
-	_makeGraphs(_cpuList, _taskList);
-	for (auto const &g: _graphs)
+	_makeGraphs();
+
+	for (auto const &stream: _graphs)
+		for (auto const &g: stream)
+			g->draw(1.5 * _dpr);
+
+	for (auto const &g: _comboGraphs)
 		g->draw(1.5 * _dpr);
 
 	/* Process and draw all plugin-specific shapes. */
-	_makePluginShapes(_cpuList, _taskList);
+	_makePluginShapes();
 	while (!_shapes.empty()) {
 		auto s = _shapes.front();
 		s->draw();
@@ -116,8 +122,8 @@ void KsGLWidget::paintGL()
 /** Reset (empty) the widget. */
 void KsGLWidget::reset()
 {
-	_cpuList = {};
-	_taskList = {};
+	_streamPlots.clear();
+	_streamPlots.clear();
 	_data = nullptr;
 	_model.reset();
 }
@@ -132,7 +138,7 @@ void KsGLWidget::mousePressEvent(QMouseEvent *event)
 }
 
 int KsGLWidget::_getLastTask(struct kshark_trace_histo *histo,
-			     int bin, int cpu)
+			     int bin, int sd, int cpu)
 {
 	kshark_context *kshark_ctx(nullptr);
 	kshark_entry_collection *col;
@@ -143,15 +149,17 @@ int KsGLWidget::_getLastTask(struct kshark_trace_histo *histo,
 
 	col = kshark_find_data_collection(kshark_ctx->collections,
 					  KsUtils::matchCPUVisible,
-					  cpu);
+					  sd, &cpu, 1);
 
 	for (int b = bin; b >= 0; --b) {
-		pid = ksmodel_get_pid_back(histo, b, cpu, false, col, nullptr);
+		pid = ksmodel_get_pid_back(histo, b, sd, cpu,
+					   false, col, nullptr);
 		if (pid >= 0)
 			return pid;
 	}
 
 	return ksmodel_get_pid_back(histo, LOWER_OVERFLOW_BIN,
+					   sd,
 					   cpu,
 					   false,
 					   col,
@@ -159,7 +167,7 @@ int KsGLWidget::_getLastTask(struct kshark_trace_histo *histo,
 }
 
 int KsGLWidget::_getLastCPU(struct kshark_trace_histo *histo,
-			     int bin, int pid)
+			    int bin, int sd, int pid)
 {
 	kshark_context *kshark_ctx(nullptr);
 	kshark_entry_collection *col;
@@ -170,15 +178,17 @@ int KsGLWidget::_getLastCPU(struct kshark_trace_histo *histo,
 
 	col = kshark_find_data_collection(kshark_ctx->collections,
 					  kshark_match_pid,
-					  pid);
+					  sd, &pid, 1);
 
 	for (int b = bin; b >= 0; --b) {
-		cpu = ksmodel_get_cpu_back(histo, b, pid, false, col, nullptr);
+		cpu = ksmodel_get_cpu_back(histo, b, sd, pid,
+					   false, col, nullptr);
 		if (cpu >= 0)
 			return cpu;
 	}
 
 	return ksmodel_get_cpu_back(histo, LOWER_OVERFLOW_BIN,
+					   sd,
 					   pid,
 					   false,
 					   col,
@@ -189,7 +199,7 @@ int KsGLWidget::_getLastCPU(struct kshark_trace_histo *histo,
 /** Reimplemented event handler used to receive mouse move events. */
 void KsGLWidget::mouseMoveEvent(QMouseEvent *event)
 {
-	int bin, cpu, pid;
+	int bin, sd, cpu, pid;
 	size_t row;
 	bool ret;
 
@@ -197,22 +207,21 @@ void KsGLWidget::mouseMoveEvent(QMouseEvent *event)
 		_rangeBoundStretched(_posInRange(event->pos().x()));
 
 	bin = event->pos().x() - _hMargin;
-	cpu = getPlotCPU(event->pos());
-	pid = getPlotPid(event->pos());
+	getPlotInfo(event->pos(), &sd, &cpu, &pid);
 
-	ret = _find(bin, cpu, pid, 5, false, &row);
+	ret = _find(bin, sd, cpu, pid, 5, false, &row);
 	if (ret) {
 		emit found(row);
 	} else {
 		if (cpu >= 0) {
-			pid = _getLastTask(_model.histo(), bin, cpu);
+			pid = _getLastTask(_model.histo(), bin, sd, cpu);
 		}
 
 		if (pid > 0) {
-			cpu = _getLastCPU(_model.histo(), bin, pid);
+			cpu = _getLastCPU(_model.histo(), bin, sd, pid);
 		}
 
-		emit notFound(ksmodel_bin_ts(_model.histo(), bin), cpu, pid);
+		emit notFound(ksmodel_bin_ts(_model.histo(), bin), sd, cpu, pid);
 	}
 }
 
@@ -325,8 +334,14 @@ void KsGLWidget::keyReleaseEvent(QKeyEvent *event)
  */
 void KsGLWidget::loadData(KsDataStore *data)
 {
+	kshark_context *kshark_ctx(nullptr);
+	QVector<int> plotVec;
 	uint64_t tMin, tMax;
+	int *streamIds, sd;
 	int nCPUs, nBins;
+
+	if (!kshark_instance(&kshark_ctx) || !kshark_ctx->n_streams)
+		return;
 
 	_data = data;
 
@@ -335,9 +350,10 @@ void KsGLWidget::loadData(KsDataStore *data)
 	 * One bin will correspond to one pixel.
 	 */
 	nBins = width() - _hMargin * 2;
-	nCPUs = tep_get_cpus(_data->tep());
-
 	_model.reset();
+
+	if (!_data->size())
+		return;
 
 	/* Now load the entire set of trace data. */
 	tMin = _data->rows()[0]->ts;
@@ -345,16 +361,25 @@ void KsGLWidget::loadData(KsDataStore *data)
 	ksmodel_set_bining(_model.histo(), nBins, tMin, tMax);
 	_model.fill(_data->rows(), _data->size());
 
-	/* Make a default CPU list. All CPUs will be plotted. */
-	_cpuList = {};
-	for (int i = 0; i < nCPUs; ++i)
-		_cpuList.append(i);
+	_streamPlots.clear();
+	/*
+	 * Make a default CPU  Taski lists. All CPUs from all Data streams will
+	 * be plotted. No tasks will be plotted.
+	 */
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
+		sd = streamIds[i];
+		nCPUs = tep_get_cpus(_data->tep(sd));
+		plotVec.clear();
+		for (int i = 0; i < nCPUs; ++i)
+			plotVec.append(i);
 
-	/* Make a default task list. No tasks will be plotted. */
-	_taskList = {};
+		_streamPlots[sd]._cpuList = plotVec;
+		_streamPlots[sd]._taskList = {};
+	}
 
 	loadColors();
-	_makeGraphs(_cpuList, _taskList);
+	_makeGraphs();
 }
 
 /**
@@ -373,85 +398,49 @@ void KsGLWidget::loadColors()
  * Position the graphical elements of the marker according to the current
  * position of the graphs inside the GL widget.
  */
-void KsGLWidget::setMark(KsGraphMark *mark)
+void KsGLWidget::setMarkPoints(const KsDataStore &data, KsGraphMark *mark)
 {
+	const kshark_entry *e = data.rows()[mark->_pos];
+	int sd = e->stream_id;
+
 	mark->_mark.setDPR(_dpr);
 	mark->_mark.setX(mark->_bin + _hMargin);
 	mark->_mark.setY(_vMargin / 2 + 2, height() - _vMargin);
 
-	if (mark->_cpu >= 0) {
-		mark->_mark.setCPUY(_graphs[mark->_cpu]->getBase());
-		mark->_mark.setCPUVisible(true);
-	} else {
-		mark->_mark.setCPUVisible(false);
-	}
+	mark->_mark.setCPUVisible(false);
+	mark->_mark.setTaskVisible(false);
+	mark->_mark.setComboVisible(false);
 
-	if (mark->_task >= 0) {
-		mark->_mark.setTaskY(_graphs[mark->_task]->getBase());
-		mark->_mark.setTaskVisible(true);
-	} else {
-		mark->_mark.setTaskVisible(false);
-	}
-}
-
-/**
- * @brief Check if a given KernelShark entry is ploted.
- *
- * @param e: Input location for the KernelShark entry.
- * @param graphCPU: Output location for index of the CPU graph to which this
- *		    entry belongs. If such a graph does not exist the outputted
- *		    value is "-1".
- * @param graphTask: Output location for index of the Task graph to which this
- *		     entry belongs. If such a graph does not exist the
- *		     outputted value is "-1".
- */
-void KsGLWidget::findGraphIds(const kshark_entry &e,
-			      int *graphCPU,
-			      int *graphTask)
-{
-	int graph(0);
-	bool cpuFound(false), taskFound(false);
-
-	/*
-	 * Loop over all CPU graphs and try to find the one that
-	 * contains the entry.
-	 */
-	for (auto const &c: _cpuList) {
-		if (c == e.cpu) {
-			cpuFound = true;
-			break;
+	for (int i = 0; i < _streamPlots[sd]._cpuList.count(); ++i) {
+		if (_streamPlots[sd]._cpuList[i] == e->cpu) {
+			mark->_mark.setCPUY(_streamPlots[sd]._cpuPlotBase[i]);
+			mark->_mark.setCPUVisible(true);
 		}
-		++graph;
 	}
 
-	if (cpuFound)
-		*graphCPU = graph;
-	else
-		*graphCPU = -1;
-
-	/*
-	 * Loop over all Task graphs and try to find the one that
-	 * contains the entry.
-	 */
-	graph = _cpuList.count();
-	for (auto const &p: _taskList) {
-		if (p == e.pid) {
-			taskFound = true;
-			break;
+	for (int i = 0; i < _streamPlots[sd]._taskList.count(); ++i) {
+		if (_streamPlots[sd]._taskList[i] == e->pid) {
+			mark->_mark.setTaskY(_streamPlots[sd]._taskPlotBase[i]);
+			mark->_mark.setTaskVisible(true);
 		}
-		++graph;
 	}
 
-	if (taskFound)
-		*graphTask = graph;
-	else
-		*graphTask = -1;
+	for (auto const &c: _comboPlots) {
+		if (c._guestStreamId == e->stream_id && c._vcpu == e->cpu) {
+			mark->_mark.setComboY(c._vcpuBase);
+			mark->_mark.setComboVisible(true);
+		} else if (c._hostStreamId == e->stream_id &&
+			   c._hostPid == e->pid) {
+			mark->_mark.setComboY(c._hostBase);
+			mark->_mark.setComboVisible(true);
+		}
+	}
 }
 
 void KsGLWidget::_drawAxisX()
 {
 	KsPlot::Point a0(_hMargin, _vMargin / 4), a1(_hMargin, _vMargin / 2);
-	KsPlot::Point b0(width()/2, _vMargin / 4), b1(width() / 2, _vMargin / 2);
+	KsPlot::Point b0(width() / 2, _vMargin / 4), b1(width() / 2, _vMargin / 2);
 	KsPlot::Point c0(width() - _hMargin, _vMargin / 4),
 			 c1(width() - _hMargin, _vMargin / 2);
 	int lineSize = 2 * _dpr;
@@ -466,42 +455,68 @@ void KsGLWidget::_drawAxisX()
 	KsPlot::drawLine(a0, c0, {}, lineSize);
 }
 
-void KsGLWidget::_makeGraphs(QVector<int> cpuList, QVector<int> taskList)
+void KsGLWidget::_makeGraphs()
 {
+	int base(_vMargin + KS_GRAPH_HEIGHT);
+
 	/* The very first thing to do is to clean up. */
-	for (auto &g: _graphs)
+	for (auto &stream: _graphs) {
+		for (auto &g: stream)
+			delete g;
+		stream.resize(0);
+	}
+
+	for (auto &g: _comboGraphs)
 		delete g;
-	_graphs.resize(0);
+	_comboGraphs.resize(0);
 
 	if (!_data || !_data->size())
 		return;
 
-	auto lamAddGraph = [&](KsPlot::Graph *graph) {
+	auto lamAddGraph = [&](int sd, KsPlot::Graph *graph) {
 		/*
-		* Calculate the base level of the CPU graph inside the widget.
-		* Remember that the "Y" coordinate is inverted.
-		*/
+		 * Calculate the base level of the CPU graph inside the widget.
+		 * Remember that the "Y" coordinate is inverted.
+		 */
 		if (!graph)
 			return;
 
-		int base = _vMargin +
-			   _vSpacing * _graphs.count() +
-			   KS_GRAPH_HEIGHT * (_graphs.count() + 1);
-
 		graph->setBase(base);
-		_graphs.append(graph);
+
+		_graphs[sd].append(graph);
+		base += graph->height() + _vSpacing;
 	};
 
-	/* Create CPU graphs according to the cpuList. */
-	for (auto const &cpu: cpuList)
-		lamAddGraph(_newCPUGraph(cpu));
+	for (auto it = _streamPlots.begin(); it != _streamPlots.end(); ++it) {
+		int sd = it.key();
+		/* Create CPU graphs according to the cpuList. */
+		it.value()._cpuPlotBase = {};
+		for (auto const &cpu: it.value()._cpuList) {
+			it.value()._cpuPlotBase.append(base);
+			lamAddGraph(sd, _newCPUGraph(sd, cpu));
+		}
+		/* Create Task graphs taskList to the taskList. */
+		it.value()._taskPlotBase = {};
+		for (auto const &pid: it.value()._taskList) {
+			it.value()._taskPlotBase.append(base);
+			lamAddGraph(sd, _newTaskGraph(sd, pid));
+		}
+	}
 
-	/* Create Task graphs taskList to the taskList. */
-	for (auto const &pid: taskList)
-		lamAddGraph(_newTaskGraph(pid));
+	for (auto &cp: _comboPlots) {
+		KsPlot::ComboGraph *graph = _newComboGraph(cp._hostStreamId,
+							   cp._hostPid,
+							   cp._guestStreamId,
+							   cp._vcpu);
+		graph->setBase(base);
+		_comboGraphs.append(graph);
+		cp._vcpuBase = base;
+		cp._hostBase = base + graph->height() / 2;
+		base += graph->height() + _vSpacing;
+	}
 }
 
-void KsGLWidget::_makePluginShapes(QVector<int> cpuList, QVector<int> taskList)
+void KsGLWidget::_makePluginShapes()
 {
 	kshark_context *kshark_ctx(nullptr);
 	kshark_event_handler *evt_handlers;
@@ -513,32 +528,37 @@ void KsGLWidget::_makePluginShapes(QVector<int> cpuList, QVector<int> taskList)
 	cppArgv._histo = _model.histo();
 	cppArgv._shapes = &_shapes;
 
-	for (int g = 0; g < cpuList.count(); ++g) {
-		cppArgv._graph = _graphs[g];
-		evt_handlers = kshark_ctx->event_handlers;
-		while (evt_handlers) {
-			evt_handlers->draw_func(cppArgv.toC(),
-						cpuList[g],
-						KSHARK_PLUGIN_CPU_DRAW);
+	for (auto it = _streamPlots.constBegin(); it != _streamPlots.constEnd(); ++it) {
+		int sd = it.key();
+		for (int g = 0; g < it.value()._cpuList.count(); ++g) {
+			cppArgv._graph = _graphs[it.key()][g];
+			evt_handlers = kshark_ctx->event_handlers;
+			while (evt_handlers) {
+				evt_handlers->draw_func(cppArgv.toC(),
+							sd,
+							it.value()._cpuList[g],
+							KSHARK_PLUGIN_CPU_DRAW);
 
-			evt_handlers = evt_handlers->next;
+				evt_handlers = evt_handlers->next;
+			}
 		}
-	}
 
-	for (int g = 0; g < taskList.count(); ++g) {
-		cppArgv._graph = _graphs[cpuList.count() + g];
-		evt_handlers = kshark_ctx->event_handlers;
-		while (evt_handlers) {
-			evt_handlers->draw_func(cppArgv.toC(),
-						taskList[g],
-						KSHARK_PLUGIN_TASK_DRAW);
+		for (int g = 0; g < it.value()._taskList.count(); ++g) {
+			cppArgv._graph = _graphs[it.key()][it.value()._cpuList.count() + g];
+			evt_handlers = kshark_ctx->event_handlers;
+			while (evt_handlers) {
+				evt_handlers->draw_func(cppArgv.toC(),
+							sd,
+							it.value()._taskList[g],
+							KSHARK_PLUGIN_TASK_DRAW);
 
-			evt_handlers = evt_handlers->next;
+				evt_handlers = evt_handlers->next;
+			}
 		}
 	}
 }
 
-KsPlot::Graph *KsGLWidget::_newCPUGraph(int cpu)
+KsPlot::Graph *KsGLWidget::_newCPUGraph(int sd, int cpu)
 {
 	/* The CPU graph needs to know only the colors of the tasks. */
 	KsPlot::Graph *graph = new KsPlot::Graph(_model.histo(),
@@ -557,15 +577,15 @@ KsPlot::Graph *KsGLWidget::_newCPUGraph(int cpu)
 
 	col = kshark_find_data_collection(kshark_ctx->collections,
 					  KsUtils::matchCPUVisible,
-					  cpu);
+					  sd, &cpu, 1);
 
 	graph->setDataCollectionPtr(col);
-	graph->fillCPUGraph(cpu);
+	graph->fillCPUGraph(sd, cpu);
 
 	return graph;
 }
 
-KsPlot::Graph *KsGLWidget::_newTaskGraph(int pid)
+KsPlot::Graph *KsGLWidget::_newTaskGraph(int sd, int pid)
 {
 	/*
 	 * The Task graph needs to know the colors of the tasks and the colors
@@ -584,7 +604,8 @@ KsPlot::Graph *KsGLWidget::_newTaskGraph(int pid)
 	graph->setHeight(KS_GRAPH_HEIGHT);
 
 	col = kshark_find_data_collection(kshark_ctx->collections,
-					  kshark_match_pid, pid);
+					  kshark_match_pid, sd, &pid, 1);
+
 	if (!col) {
 		/*
 		 * If a data collection for this task does not exist,
@@ -593,7 +614,8 @@ KsPlot::Graph *KsGLWidget::_newTaskGraph(int pid)
 		col = kshark_register_data_collection(kshark_ctx,
 						      _data->rows(),
 						      _data->size(),
-						      kshark_match_pid, pid,
+						      kshark_match_pid,
+						      sd, &pid, 1,
 						      25);
 	}
 
@@ -616,7 +638,54 @@ KsPlot::Graph *KsGLWidget::_newTaskGraph(int pid)
 	}
 
 	graph->setDataCollectionPtr(col);
-	graph->fillTaskGraph(pid);
+	graph->fillTaskGraph(sd, pid);
+
+	return graph;
+}
+
+KsPlot::ComboGraph *KsGLWidget::_newComboGraph(int sdHost, int pidHost, int sdGuest, int vcpu)
+{
+	/*
+	 * The Combo graph needs to know the colors of the tasks and the colors
+	 * of the CPUs.
+	 */
+	KsPlot::ComboGraph *graph =
+		new KsPlot::ComboGraph(_model.histo(), &_pidColors,
+						       &_cpuColors);
+	kshark_context *kshark_ctx(nullptr);
+	kshark_entry_collection *col;
+
+	if (!kshark_instance(&kshark_ctx))
+		return nullptr;
+
+	graph->setHMargin(_hMargin);
+
+	/* The Combo graph is two times taller than the normal graph. */
+	graph->setHeight(2 * KS_GRAPH_HEIGHT);
+
+	col = kshark_find_data_collection(kshark_ctx->collections,
+					  KsUtils::matchCPUVisible,
+					  sdGuest, &vcpu, 1);
+	graph->setGuestDataCollectionPtr(col);
+
+	col = kshark_find_data_collection(kshark_ctx->collections,
+					  kshark_match_pid,
+					  sdHost, &pidHost, 1);
+	if (!col) {
+		/*
+		 * If a data collection for this task does not exist,
+		 * register a new one.
+		 */
+		col = kshark_register_data_collection(kshark_ctx,
+						      _data->rows(),
+						      _data->size(),
+						      kshark_match_pid,
+						      sdHost, &pidHost, 1,
+						      25);
+	}
+	graph->setHostDataCollectionPtr(col);
+
+	graph->fill(sdHost, pidHost, sdGuest, vcpu);
 
 	return graph;
 }
@@ -636,18 +705,19 @@ KsPlot::Graph *KsGLWidget::_newTaskGraph(int pid)
 bool KsGLWidget::find(const QPoint &point, int variance, bool joined,
 		      size_t *index)
 {
+	int bin, sd, cpu, pid;
+
 	/*
 	 * Get the bin, pid and cpu numbers.
 	 * Remember that one bin corresponds to one pixel.
 	 */
-	int bin = point.x() - _hMargin;
-	int cpu = getPlotCPU(point);
-	int pid = getPlotPid(point);
+	bin = point.x() - _hMargin;
+	getPlotInfo(point, &sd, &cpu, &pid);
 
-	return _find(bin, cpu, pid, variance, joined, index);
+	return _find(bin, sd, cpu, pid, variance, joined, index);
 }
 
-int KsGLWidget::_getNextCPU(int pid, int bin)
+int KsGLWidget::_getNextCPU(int sd, int pid, int bin)
 {
 	kshark_context *kshark_ctx(nullptr);
 	kshark_entry_collection *col;
@@ -658,12 +728,12 @@ int KsGLWidget::_getNextCPU(int pid, int bin)
 
 	col = kshark_find_data_collection(kshark_ctx->collections,
 					  kshark_match_pid,
-					  pid);
+					  sd, &pid, 1);
 	if (!col)
 		return KS_EMPTY_BIN;
 
 	for (int i = bin; i < _model.histo()->n_bins; ++i) {
-		cpu = ksmodel_get_cpu_front(_model.histo(), i, pid,
+		cpu = ksmodel_get_cpu_front(_model.histo(), i, sd, pid,
 					    false, col, nullptr);
 		if (cpu >= 0)
 			return cpu;
@@ -672,7 +742,7 @@ int KsGLWidget::_getNextCPU(int pid, int bin)
 	return KS_EMPTY_BIN;
 }
 
-bool KsGLWidget::_find(int bin, int cpu, int pid,
+bool KsGLWidget::_find(int bin, int sd, int cpu, int pid,
 		       int variance, bool joined, size_t *row)
 {
 	int hSize = _model.histo()->n_bins;
@@ -690,7 +760,7 @@ bool KsGLWidget::_find(int bin, int cpu, int pid,
 	auto lamGetEntryByCPU = [&](int b) {
 		/* Get the first data entry in this bin. */
 		found = ksmodel_first_index_at_cpu(_model.histo(),
-							   b, cpu);
+						   b, sd, cpu);
 		if (found < 0) {
 			/*
 			 * The bin is empty or the entire connect of the bin
@@ -706,7 +776,7 @@ bool KsGLWidget::_find(int bin, int cpu, int pid,
 	auto lamGetEntryByPid = [&](int b) {
 		/* Get the first data entry in this bin. */
 		found = ksmodel_first_index_at_pid(_model.histo(),
-							   b, pid);
+						   b, sd, pid);
 		if (found < 0) {
 			/*
 			 * The bin is empty or the entire connect of the bin
@@ -772,7 +842,7 @@ bool KsGLWidget::_find(int bin, int cpu, int pid,
 		 * for an entry on the next CPU used by this task.
 		 */
 		if (!ret && joined) {
-			cpu = _getNextCPU(pid, bin);
+			cpu = _getNextCPU(sd, pid, bin);
 			ret = lamFindEntryByCPU(bin);
 		}
 
@@ -857,7 +927,6 @@ void KsGLWidget::_rangeChanged(int binMin, int binMax)
 	 * Calculate the new range of the histogram. The number of bins will
 	 * stay the same.
 	 */
-
 	min = ksmodel_bin_ts(_model.histo(), binMin);
 	max = ksmodel_bin_ts(_model.histo(), binMax);
 	if (max - min < nBins) {
@@ -911,35 +980,55 @@ int KsGLWidget::_posInRange(int x)
 	return posX;
 }
 
-/** Get the CPU Id of the Graph plotted at given position. */
-int KsGLWidget::getPlotCPU(const QPoint &point)
+bool KsGLWidget::getPlotInfo(const QPoint &point, int *sd, int *cpu, int *pid)
 {
-	int cpuId, y = point.y();
+	int base, n;
 
-	if (_cpuList.count() == 0)
-		return -1;
+	*sd = *cpu = *pid = -1;
 
-	cpuId = (y - _vMargin + _vSpacing / 2) / (_vSpacing + KS_GRAPH_HEIGHT);
-	if (cpuId < 0 || cpuId >= _cpuList.count())
-		return -1;
+	for (auto it = _streamPlots.constBegin(); it != _streamPlots.constEnd(); ++it) {
+		n = it.value()._cpuList.count();
+		for (int i = 0; i < n; ++i) {
+			base = it.value()._cpuPlotBase[i];
+			if (base - KS_GRAPH_HEIGHT < point.y() &&
+			    point.y() < base) {
+				*sd = it.key();
+				*cpu = it.value()._cpuList[i];
 
-	return _cpuList[cpuId];
-}
+				return true;
+			}
+		}
 
-/** Get the CPU Id of the Graph plotted at given position. */
-int KsGLWidget::getPlotPid(const QPoint &point)
-{
-	int pidId, y = point.y();
+		n = it.value()._taskList.count();
+		for (int i = 0; i < n; ++i) {
+			base = it.value()._taskPlotBase[i];
+			if (base - KS_GRAPH_HEIGHT < point.y() &&
+			    point.y() < base) {
+				*sd = it.key();
+				*pid = it.value()._taskList[i];
 
-	if (_taskList.count() == 0)
-		return -1;
+				return true;
+			}
+		}
+	}
 
-	pidId = (y - _vMargin -
-		     _cpuList.count()*(KS_GRAPH_HEIGHT + _vSpacing) +
-		     _vSpacing / 2) / (_vSpacing + KS_GRAPH_HEIGHT);
+	for (auto const &cp: _comboPlots) {
+		base = cp._vcpuBase + _vSpacing / 4;
+		if (base - KS_GRAPH_HEIGHT < point.y() && point.y() < base) {
+			*sd = cp._guestStreamId;
+			*cpu = cp._vcpu;
 
-	if (pidId < 0 || pidId >= _taskList.count())
-		return -1;
+			return true;
+		}
 
-	return _taskList[pidId];
+		base = cp._hostBase + _vSpacing / 4;
+		if (base - KS_GRAPH_HEIGHT < point.y() && point.y() < base) {
+			*sd = cp._hostStreamId;
+			*pid = cp._hostPid;
+
+			return true;
+		}
+	}
+
+	return false;
 }

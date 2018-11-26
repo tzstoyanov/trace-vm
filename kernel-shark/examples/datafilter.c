@@ -64,7 +64,7 @@ int main(int argc, char **argv)
 	 * filterd entris in text format.
 	 */
 	kshark_ctx->filter_mask = KS_TEXT_VIEW_FILTER_MASK;
-	kshark_filter_entries(kshark_ctx, sd, data, n_rows);
+	kshark_filter_stream_entries(kshark_ctx, sd, data, n_rows);
 
 	/* Print to the screen the first 10 visible entries. */
 	count = 0;
@@ -94,7 +94,7 @@ int main(int argc, char **argv)
 					     event->id);
 	}
 
-	kshark_filter_entries(kshark_ctx, sd, data, n_rows);
+	kshark_filter_stream_entries(kshark_ctx, sd, data, n_rows);
 
 	/* Print to the screen the first 10 visible entries. */
 	count = 0;

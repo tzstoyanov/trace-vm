@@ -18,23 +18,16 @@
 
 /** Structure representing a plugin-specific context. */
 struct plugin_rename_context {
-	/** Input handle for the trace data file. */
-	struct tracecmd_input	*handle;
+	/** Stream identifier of the Monitor data. */
+	uint8_t		monitor_stream_id;
 
-	/** Page event used to parse the page. */
-	struct tep_handle	*pevent;
-
-	/** Pointer to the sched_switch_event object. */
-	struct tep_event_format	*sched_switch_event;
+	/** Pointer to the kvm_entry_event object. */
+	struct tep_event_format	*kvm_entry_event;
 
 	/** Pointer to the sched_switch_next_field format descriptor. */
-	struct tep_format_field	*sched_switch_next_field;
+	struct tep_format_field	*kvm_vcpu_id_field;
 
-	/** Pointer to the sched_switch_comm_field format descriptor. */
-	struct tep_format_field	*sched_switch_comm_field;
-
-	/** True if the job is done. */
-	bool done;
+	
 };
 
 /** Plugin context instances. */
@@ -91,27 +84,27 @@ plugin_update_stream_context(struct kshark_context *kshark_ctx, int sd)
 	return true;
 }
 
-// static bool plugin_update_context(struct kshark_context *kshark_ctx)
-// {
-// 	int *stream_ids, i;
-// 
-// 	stream_ids = kshark_all_streams(kshark_ctx);
-// 	for (i = 0; i < kshark_ctx->n_streams; ++i) {
-// 		if (!plugin_update_stream_context(kshark_ctx, stream_ids[i]))
-// 			goto fail;
-// 	}
-// 
-// 	return true;
-// 
-//  fail:
-// 	free_plugin_context();
-// 
-// 	return false;
-// }
+static bool plugin_update_context(struct kshark_context *kshark_ctx)
+{
+	int *stream_ids, i;
 
-static void plugin_nop(struct kshark_context *kshark_ctx,
-		       struct tep_record *rec,
-		       struct kshark_entry *entry)
+	stream_ids = kshark_all_streams(kshark_ctx);
+	for (i = 0; i < kshark_ctx->n_streams; ++i) {
+		if (!plugin_update_stream_context(kshark_ctx, stream_ids[i]))
+			goto fail;
+	}
+
+	return true;
+
+ fail:
+	free_plugin_context();
+
+	return false;
+}
+
+static void plugin_kvm_action(struct kshark_context *kshark_ctx,
+			      struct tep_record *rec,
+			      struct kshark_entry *entry)
 {}
 
 static int plugin_get_next_pid(struct tep_record *record, int sd)
@@ -156,54 +149,9 @@ static bool plugin_sched_switch_match_pid(struct kshark_context *kshark_ctx,
 	return false;
 }
 
-static void plugin_rename(struct kshark_cpp_argv *argv,
-			  int sd, int pid, int draw_action)
-{
-	struct plugin_rename_context *plugin_ctx;
-	struct kshark_context *kshark_ctx;
-	const struct kshark_entry *entry;
-	struct kshark_entry_request req;
-	struct tep_record *record;
-	int *stream_ids, *pids, n_tasks, i, r;
-	const char *comm;
-	ssize_t index;
-
-	req.first = argv->histo->data_size - 1;
-	req.n = argv->histo->data_size;
-	req.cond = plugin_sched_switch_match_pid;
-	req.vis_only = false;
-
-	printf("@@@ plugin_rename\n");
-	kshark_ctx = NULL;
-	if (!kshark_instance(&kshark_ctx))
-		return;
-
-	stream_ids = kshark_all_streams(kshark_ctx);
-	for (i = 0; i < kshark_ctx->n_streams; ++i) {
-		sd = stream_ids[i];
-		plugin_ctx = plugin_context_handler[sd];
-		if (plugin_ctx->done)
-			continue;
-
-		req.sd = sd;
-		n_tasks = kshark_get_task_pids(kshark_ctx, sd, &pids);
-		for (r = 0; r < n_tasks; ++r) {
-			req.val = pids[r];
-			entry = kshark_get_entry_back(&req, argv->histo->data, &index);
-			if (!entry)
-				continue;
-
-// 			record = kshark_read_at(kshark_ctx, sd, entry->offset);
-// 			comm = record->data +
-// 			       plugin_ctx->sched_switch_comm_field->offset;
-
-			printf("%li task: %s  pid: %i\n", index, comm, pids[r]);
-		}
-
-		plugin_ctx->done = true;
-		free(pids);
-	}
-}
+static void kvm_draw_nop(struct kshark_cpp_argv *argv,
+			 int sd, int pid, int draw_action)
+{}
 
 static int plugin_rename_sched_init(struct kshark_context *kshark_ctx, int sd)
 {
@@ -219,14 +167,12 @@ static int plugin_rename_sched_init(struct kshark_context *kshark_ctx, int sd)
 				      plugin_nop,
 				      plugin_rename);
 
-// 	printf("--> rename init %i  %p %p\n", sd, plugin_context_handler[0], plugin_context_handler[1]);
 	return kshark_ctx->n_streams;
 }
 
 static int plugin_rename_sched_close(struct kshark_context *kshark_ctx, int sd)
 {
 	struct plugin_rename_context *plugin_ctx;
-// 	printf("--> rename close %i %p %p %p\n", sd, plugin_context_handler, plugin_context_handler[0], plugin_context_handler[1]);
 	plugin_ctx = plugin_context_handler[sd];
 	if (!plugin_ctx)
 		return 0;
@@ -237,7 +183,6 @@ static int plugin_rename_sched_close(struct kshark_context *kshark_ctx, int sd)
 					plugin_nop,
 					plugin_rename);
 
-// 	printf("<-- rename close %i  %p\n", sd, plugin_ctx);
 	plugin_close(sd);
 
 	return kshark_ctx->n_streams;

@@ -52,17 +52,19 @@ public:
 
 	void markEntry(size_t);
 
-	void cpuReDraw(QVector<int>);
+	void cpuReDraw(int sd, QVector<int>cpus);
 
-	void taskReDraw(QVector<int>);
+	void taskReDraw(int sd, QVector<int> pids);
 
-	void addCPUPlot(int);
+	void comboReDraw(int sd, QVector<int> v);
 
-	void addTaskPlot(int);
+	void addCPUPlot(int sd, int cpu);
 
-	void removeCPUPlot(int);
+	void addTaskPlot(int sd, int cpu);
 
-	void removeTaskPlot(int);
+	void removeCPUPlot(int sd, int cpu);
+
+	void removeTaskPlot(int sd, int cpu);
 
 	void update(KsDataStore *data);
 
@@ -81,7 +83,6 @@ signals:
 	void deselect();
 
 private:
-
 	void _zoomIn();
 
 	void _zoomOut();
@@ -96,7 +97,7 @@ private:
 
 	void _stopUpdating();
 
-	void _resetPointer(uint64_t ts, int cpu, int pid);
+	void _resetPointer(uint64_t ts, int sd, int cpu, int pid);
 
 	void _setPointerInfo(size_t);
 

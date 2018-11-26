@@ -197,7 +197,7 @@ KsViewModel::KsViewModel(QObject *parent)
 : QAbstractTableModel(parent),
   _data(nullptr),
   _nRows(0),
-  _header({"#", "CPU", "Time Stamp", "Task", "PID",
+  _header({" >> ", "#", "CPU", "Time Stamp", "Task", "PID",
 	   "Latency", "Event", "Info"}),
   _markA(KS_NO_ROW_SELECTED),
   _markB(KS_NO_ROW_SELECTED)
@@ -211,14 +211,21 @@ KsViewModel::KsViewModel(QObject *parent)
 QVariant KsViewModel::data(const QModelIndex &index, int role) const
 {
 	if (role == Qt::ForegroundRole) {
-		if (index.row() == _markA)
+		if (index.row() == _markA && index.column() != 0)
 			return QVariant::fromValue(QColor(Qt::white));
 
-		if (index.row() == _markB)
+		if (index.row() == _markB && index.column() != 0)
 			return QVariant::fromValue(QColor(Qt::white));
 	}
 
 	if (role == Qt::BackgroundRole) {
+		if (index.column() == TRACE_VIEW_STREAM_ID) {
+			int sd = _data[index.row()]->stream_id;
+			QColor col = KsUtils::getStreamColor(sd);
+
+			return QVariant::fromValue(col);
+		}
+
 		if (index.row() == _markA)
 			return QVariant::fromValue(QColor(_colorMarkA));
 
@@ -238,6 +245,8 @@ QString KsViewModel::getValueStr(int column, int row) const
 	int pid;
 
 	switch (column) {
+		case TRACE_VIEW_STREAM_ID :
+			return QString("%1").arg(_data[row]->stream_id);
 		case TRACE_VIEW_COL_INDEX :
 			return QString("%1").arg(row);
 

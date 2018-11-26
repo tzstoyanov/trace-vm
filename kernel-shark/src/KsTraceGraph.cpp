@@ -271,8 +271,9 @@ void KsTraceGraph::_stopUpdating()
 	_keyPressed = false;
 }
 
-void KsTraceGraph::_resetPointer(uint64_t ts, int cpu, int pid)
+void KsTraceGraph::_resetPointer(uint64_t ts, int sd, int cpu, int pid)
 {
+	struct kshark_data_stream *stream;
 	uint64_t sec, usec;
 	QString pointer;
 
@@ -286,7 +287,11 @@ void KsTraceGraph::_resetPointer(uint64_t ts, int cpu, int pid)
 		if (!kshark_instance(&kshark_ctx))
 			return;
 
-		QString comm(tep_data_comm_from_pid(kshark_ctx->pevent, pid));
+		stream = kshark_get_data_stream(kshark_ctx, sd);
+		if (!stream)
+			return;
+
+		QString comm(tep_data_comm_from_pid(stream->pevent, pid));
 		comm.append("-");
 		comm.append(QString("%1").arg(pid));
 		_labelI1.setText(comm);
@@ -309,7 +314,7 @@ void KsTraceGraph::_setPointerInfo(size_t i)
 	QString info(kshark_get_info_easy(e));
 	QString comm(kshark_get_task_easy(e));
 	QString pointer, elidedText;
-	int labelWidth, width;
+	int labelWidth;
 	uint64_t sec, usec;
 
 	kshark_convert_nano(e->ts, &sec, &usec);
@@ -335,16 +340,7 @@ void KsTraceGraph::_setPointerInfo(size_t i)
 	 * The Info string is too long and cannot be displayed on the toolbar.
 	 * Try to fit the text in the available space.
 	 */
-	QFontMetrics metrix(_labelI5.font());
-	width = labelWidth - FONT_WIDTH * 3;
-	elidedText = metrix.elidedText(info, Qt::ElideRight, width);
-
-	while(labelWidth < STRING_WIDTH(elidedText) + FONT_WIDTH * 5) {
-		width -= FONT_WIDTH * 3;
-		elidedText = metrix.elidedText(info, Qt::ElideRight, width);
-	}
-
-	_labelI5.setText(elidedText);
+	KsUtils::setElidedText(&_labelI5, info, Qt::ElideRight, labelWidth);
 	_labelI5.setVisible(true);
 	QCoreApplication::processEvents();
 }
@@ -356,55 +352,44 @@ void KsTraceGraph::_setPointerInfo(size_t i)
  */
 void KsTraceGraph::markEntry(size_t row)
 {
-	int graph, cpuGrId, taskGrId;
-
-	_glWindow.findGraphIds(*_data->rows()[row], &cpuGrId, &taskGrId);
+	int yPosVis(-1);
 
 	/*
 	 * If a Task graph has been found, this Task graph will be
 	 * visible. If no Task graph has been found, make visible
 	 * the corresponding CPU graph.
 	 */
-	if (taskGrId >= 0)
-		graph = taskGrId;
-	else
-		graph = cpuGrId;
+	if (_mState->activeMarker()._mark.comboIsVisible())
+		yPosVis = _mState->activeMarker()._mark.comboY();
+	else if (_mState->activeMarker()._mark.taskIsVisible())
+		yPosVis = _mState->activeMarker()._mark.taskY();
+	else if (_mState->activeMarker()._mark.cpuIsVisible())
+		yPosVis = _mState->activeMarker()._mark.cpuY();
 
-	_scrollArea.ensureVisible(0,
-				  _legendAxisX.height() +
-				  _glWindow.vMargin() +
-				  KS_GRAPH_HEIGHT / 2 +
-				  graph*(KS_GRAPH_HEIGHT + _glWindow.vSpacing()),
-				  50,
-				  KS_GRAPH_HEIGHT / 2 + _glWindow.vSpacing() / 2);
+	if (yPosVis > 0)
+		_scrollArea.ensureVisible(0, yPosVis);
 
 	_glWindow.model()->jumpTo(_data->rows()[row]->ts);
-	_mState->activeMarker().set(*_data,
-				    _glWindow.model()->histo(),
-				    row, cpuGrId, taskGrId);
+	_mState->activeMarker().set(*_data, _glWindow.model()->histo(),
+				    row, _data->rows()[row]->stream_id);
 
 	_mState->updateMarkers(*_data, &_glWindow);
 }
 
 void KsTraceGraph::_markerReDraw()
 {
-	int cpuGrId, taskGrId;
 	size_t row;
 
 	if (_mState->markerA()._isSet) {
 		row = _mState->markerA()._pos;
-		_glWindow.findGraphIds(*_data->rows()[row], &cpuGrId, &taskGrId);
-		_mState->markerA().set(*_data,
-				       _glWindow.model()->histo(),
-				       row, cpuGrId, taskGrId);
+		_mState->markerA().set(*_data, _glWindow.model()->histo(),
+				       row, _data->rows()[row]->stream_id);
 	}
 
 	if (_mState->markerB()._isSet) {
 		row = _mState->markerB()._pos;
-		_glWindow.findGraphIds(*_data->rows()[row], &cpuGrId, &taskGrId);
-		_mState->markerB().set(*_data,
-				       _glWindow.model()->histo(),
-				       row, cpuGrId, taskGrId);
+		_mState->markerB().set(*_data, _glWindow.model()->histo(),
+				       row, _data->rows()[row]->stream_id);
 	}
 }
 
@@ -413,9 +398,11 @@ void KsTraceGraph::_markerReDraw()
  *
  * @param v: CPU ids to be plotted.
  */
-void KsTraceGraph::cpuReDraw(QVector<int> v)
+void KsTraceGraph::cpuReDraw(int sd, QVector<int> v)
 {
-	_glWindow._cpuList = v;
+	if (_glWindow._streamPlots.contains(sd))
+		_glWindow._streamPlots[sd]._cpuList = v;
+
 	_selfUpdate();
 }
 
@@ -424,51 +411,72 @@ void KsTraceGraph::cpuReDraw(QVector<int> v)
  *
  * @param v: Process ids of the tasks to be plotted.
  */
-void KsTraceGraph::taskReDraw(QVector<int> v)
+void KsTraceGraph::taskReDraw(int sd, QVector<int> v)
 {
-	_glWindow._taskList = v;
+	if (_glWindow._streamPlots.contains(sd))
+		_glWindow._streamPlots[sd]._taskList = v;
+
+	_selfUpdate();
+}
+
+void KsTraceGraph::comboReDraw(int sd, QVector<int> v)
+{
+	KsVirtComboPlot combo;
+
+	combo._hostStreamId = v[0];
+	combo._hostPid = v[1];
+	combo._guestStreamId = v[2];
+	combo._vcpu = v[3];
+	combo._hostBase = 0;
+	combo._vcpuBase = 0;
+
+// 	if (_glWindow._comboPlots.contains(combo))
+// 		return;
+
+	_glWindow._comboPlots.append(combo);
+
 	_selfUpdate();
 }
 
 /** Add (and plot) a CPU graph to the existing list of CPU graphs. */
-void KsTraceGraph::addCPUPlot(int cpu)
+void KsTraceGraph::addCPUPlot(int sd, int cpu)
 {
-	if (_glWindow._cpuList.contains(cpu))
+	if (_glWindow._streamPlots[sd]._cpuList.contains(cpu))
 		return;
 
-	_glWindow._cpuList.append(cpu);
-	qSort(_glWindow._cpuList);
+	_glWindow._streamPlots[sd]._cpuList.append(cpu);
+	qSort(_glWindow._streamPlots[sd]._cpuList);
 	_selfUpdate();
 }
 
 /** Add (and plot) a Task graph to the existing list of Task graphs. */
-void KsTraceGraph::addTaskPlot(int pid)
+void KsTraceGraph::addTaskPlot(int sd, int pid)
 {
-	if (_glWindow._taskList.contains(pid))
+	if (_glWindow._streamPlots[sd]._taskList.contains(pid))
 		return;
 
-	_glWindow._taskList.append(pid);
-	qSort(_glWindow._taskList);
+	_glWindow._streamPlots[sd]._taskList.append(pid);
+	qSort(_glWindow._streamPlots[sd]._taskList);
 	_selfUpdate();
 }
 
 /** Remove a CPU graph from the existing list of CPU graphs. */
-void KsTraceGraph::removeCPUPlot(int cpu)
+void KsTraceGraph::removeCPUPlot(int sd, int cpu)
 {
-	if (!_glWindow._cpuList.contains(cpu))
+	if (!_glWindow._streamPlots[sd]._cpuList.contains(cpu))
 		return;
 
-	_glWindow._cpuList.removeAll(cpu);
+	_glWindow._streamPlots[sd]._cpuList.removeAll(cpu);
 	_selfUpdate();
 }
 
 /** Remove a Task graph from the existing list of Task graphs. */
-void KsTraceGraph::removeTaskPlot(int pid)
+void KsTraceGraph::removeTaskPlot(int sd, int pid)
 {
-	if (!_glWindow._taskList.contains(pid))
+	if (!_glWindow._streamPlots[sd]._taskList.contains(pid))
 		return;
 
-	_glWindow._taskList.removeAll(pid);
+	_glWindow._streamPlots[sd]._taskList.removeAll(pid);
 	_selfUpdate();
 }
 
@@ -544,7 +552,7 @@ void KsTraceGraph::_updateGraphLegends()
 {
 	QString graphLegends, graphName;
 	QVBoxLayout *layout;
-	int width = 0;
+	int sd, width = 0;
 
 	if (_legendWindow.layout()) {
 		/*
@@ -565,28 +573,47 @@ void KsTraceGraph::_updateGraphLegends()
 	layout->setAlignment(Qt::AlignTop);
 	layout->addSpacing(_glWindow.vMargin());
 
-	auto lamMakeName = [&]() {
-		QLabel *name = new QLabel(graphName);
-
+	auto lamMaxWidth = [&]() {
 		if (width < STRING_WIDTH(graphName))
 			width = STRING_WIDTH(graphName);
-
-		name->setAlignment(Qt::AlignBottom);
-		name->setStyleSheet("QLabel {background-color : white;}");
-		name->setFixedHeight(KS_GRAPH_HEIGHT);
-		layout->addWidget(name);
 	};
 
-	for (auto const &cpu: _glWindow._cpuList) {
-		graphName = QString("CPU %1").arg(cpu);
-		lamMakeName();
+	auto lamMakeName = [&]() {
+		QVariant color = KsUtils::getStreamColor(sd);
+		QLabel *name = new QLabel(graphName);
+		QString styleSheet =
+			"background-color : " + color.toString() + ";";
+
+		name->setStyleSheet(styleSheet);
+		name->setFixedHeight(KS_GRAPH_HEIGHT);
+		layout->addWidget(name);
+		lamMaxWidth();
+	};
+
+	for (auto it = _glWindow._streamPlots.constBegin();
+	     it != _glWindow._streamPlots.constEnd();
+	     ++it) {
+		sd = it.key();
+		for (auto const &cpu: _glWindow._streamPlots[sd]._cpuList) {
+			graphName = QString(" CPU %1 ").arg(cpu);
+			lamMakeName();
+		}
+
+		for (auto const &pid: _glWindow._streamPlots[sd]._taskList) {
+			graphName =
+				QString(tep_data_comm_from_pid(_data->tep(sd), pid));
+			graphName.append(QString("-%1 ").arg(pid));
+			lamMakeName();
+		}
 	}
 
-	for (auto const &pid: _glWindow._taskList) {
-		graphName = QString(tep_data_comm_from_pid(_data->tep(),
-							   pid));
-		graphName.append(QString("-%1").arg(pid));
-		lamMakeName();
+	for (auto const &p: _glWindow._comboPlots) {
+		graphName = QString(" vCPU %1 \n\nHost-%2").arg(p._vcpu)
+							   .arg(p._hostPid);
+		QLabel *name = new QLabel(graphName);
+		name->setFixedHeight(KS_GRAPH_HEIGHT * 2);
+		layout->addWidget(name);
+		lamMaxWidth();
 	}
 
 	_legendWindow.setLayout(layout);
@@ -718,7 +745,7 @@ void KsTraceGraph::_updateGraphs(GraphActions action)
 void KsTraceGraph::_onCustomContextMenu(const QPoint &point)
 {
 	KsQuickMarkerMenu *menu(nullptr);
-	int cpu, pid;
+	int sd, cpu, pid;
 	size_t row;
 	bool found;
 
@@ -726,8 +753,8 @@ void KsTraceGraph::_onCustomContextMenu(const QPoint &point)
 	if (found) {
 		/* KernelShark entry has been found under the cursor. */
 		KsQuickContextMenu *entryMenu;
-		menu = entryMenu = new KsQuickContextMenu(_data, row,
-							  _mState, this);
+		menu = entryMenu = new KsQuickContextMenu(_mState, _data, row,
+							  this);
 
 		connect(entryMenu,	&KsQuickContextMenu::addTaskPlot,
 			this,		&KsTraceGraph::addTaskPlot);
@@ -741,34 +768,35 @@ void KsTraceGraph::_onCustomContextMenu(const QPoint &point)
 		connect(entryMenu,	&KsQuickContextMenu::removeCPUPlot,
 			this,		&KsTraceGraph::removeCPUPlot);
 	} else {
-		cpu = _glWindow.getPlotCPU(point);
+		if (!_glWindow.getPlotInfo(point, &sd, &cpu, &pid))
+			return;
+
 		if (cpu >= 0) {
 			/*
 			 * This is a CPU plot, but we do not have an entry
 			 * under the cursor.
 			 */
 			KsRmCPUPlotMenu *rmMenu;
-			menu = rmMenu = new KsRmCPUPlotMenu(_mState, cpu, this);
+			menu = rmMenu = new KsRmCPUPlotMenu(_mState, sd, cpu, this);
 
-			auto lamRmPlot = [&cpu, this] () {
-				removeCPUPlot(cpu);
+			auto lamRmPlot = [&sd, &cpu, this] () {
+				removeCPUPlot(sd, cpu);
 			};
 
 			connect(rmMenu, &KsRmPlotContextMenu::removePlot,
 				lamRmPlot);
 		}
 
-		pid = _glWindow.getPlotPid(point);
 		if (pid >= 0) {
 			/*
 			 * This is a Task plot, but we do not have an entry
 			 * under the cursor.
 			 */
 			KsRmTaskPlotMenu *rmMenu;
-			menu = rmMenu = new KsRmTaskPlotMenu(_mState, pid, this);
+			menu = rmMenu = new KsRmTaskPlotMenu(_mState, sd, pid, this);
 
-			auto lamRmPlot = [&pid, this] () {
-				removeTaskPlot(pid);
+			auto lamRmPlot = [&sd, &pid, this] () {
+				removeTaskPlot(sd, pid);
 			};
 
 			connect(rmMenu, &KsRmPlotContextMenu::removePlot,

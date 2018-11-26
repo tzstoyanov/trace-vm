@@ -332,7 +332,7 @@ bool kshark_config_doc_get(struct kshark_config_doc *conf,
 	return true;
 
  fail:
-	fprintf(stderr, "Failed to get config. document [%s]>.\n", key);
+	fprintf(stderr, "Failed to get config. document <%s>.\n", key);
 	return false;
 }
 
@@ -896,6 +896,11 @@ bool kshark_import_event_filter(struct tep_handle *pevent,
 	}
 }
 
+static int compare_ids(const void* a, const void* b)
+{
+    return ( *(int*)a - *(int*)b );
+}
+
 static bool kshark_filter_array_to_json(struct tracecmd_filter_id *filter,
 					const char *filter_name,
 					struct json_object *jobj)
@@ -913,6 +918,8 @@ static bool kshark_filter_array_to_json(struct tracecmd_filter_id *filter,
 	ids = tracecmd_filter_ids(filter);
 	if (!ids)
 		return true;
+
+	qsort(ids, filter->count, sizeof(int), compare_ids);
 
 	/* Create a Json array and fill the Id values into it. */
 	jfilter_data = json_object_new_array();
@@ -1338,6 +1345,60 @@ bool kshark_import_user_mask(struct kshark_context *kshark_ctx,
 	}
 }
 
+static bool kshark_calib_array_from_json(struct kshark_context *kshark_ctx,
+					 int sd, struct json_object *jobj)
+{
+	json_object *jcalib_argv, *jcalib;
+	int64_t *calib_argv = NULL;
+	int i, calib_length;
+
+	if (!json_object_object_get_ex(jobj, "calib. array", &jcalib_argv) ||
+	    json_object_get_type(jcalib_argv) != json_type_array)
+		return false;
+
+	calib_length = json_object_array_length(jcalib_argv);
+	if (!calib_length)
+		return false;
+
+	calib_argv = calloc(calib_length, sizeof(*calib_argv));
+	for (i = 0; i < calib_length; ++i) {
+		jcalib = json_object_array_get_idx(jcalib_argv, i);
+		calib_argv[i] = json_object_get_int64(jcalib);
+	}
+
+	kshark_ctx->stream[sd]->calib = kshark_offset_calib;
+	kshark_ctx->stream[sd]->calib_array = calib_argv;
+	kshark_ctx->stream[sd]->calib_array_size = calib_length;
+
+	return true;
+}
+
+/**
+ * @brief Load from Configuration document the value of the time calibration
+ *	  constants into a Configuration document.
+ *
+ * @param kshark_ctx: Input location for session context pointer.
+ * @param sd: Data stream identifier.
+ * @param conf: Input location for the kshark_config_doc instance. Currently
+ *		only Json format is supported. If NULL, a new Configuration
+ *		document will be created.
+ *
+ * @returns True on success, otherwise False.
+ */
+bool kshark_import_calib_array(struct kshark_context *kshark_ctx, int sd,
+			       struct kshark_config_doc *conf)
+{
+	switch (conf->format) {
+	case KS_CONFIG_JSON:
+		return kshark_calib_array_from_json(kshark_ctx, sd, conf->conf_doc);
+
+	default:
+		fprintf(stderr, "Document format %d not supported\n",
+			conf->format);
+		return false;
+	}
+}
+
 static bool kshark_calib_array_to_json(struct kshark_context *kshark_ctx,
 				       int sd, struct json_object *jobj)
 {
@@ -1488,12 +1549,12 @@ bool kshark_export_all_task_filters(struct kshark_context *kshark_ctx, int sd,
 	/* Save a filter only if it contains Id values. */
 	ret = true;
 	if (filter_is_set(stream->show_task_filter))
-		ret &= kshark_import_filter_array(stream->show_task_filter,
+		ret &= kshark_export_filter_array(stream->show_task_filter,
 						  KS_SHOW_TASK_FILTER_NAME,
 						  *conf);
 
 	if (filter_is_set(stream->hide_task_filter))
-		ret &= kshark_import_filter_array(stream->hide_task_filter,
+		ret &= kshark_export_filter_array(stream->hide_task_filter,
 						  KS_HIDE_TASK_FILTER_NAME,
 						  *conf);
 
@@ -1760,6 +1821,8 @@ kshark_export_dstream(struct kshark_context *kshark_ctx, int sd,
 	return NULL;
 }
 
+
+
 /**
  * @brief Load Data Stream from a Configuration document.
  *
@@ -1775,16 +1838,15 @@ kshark_export_dstream(struct kshark_context *kshark_ctx, int sd,
  *	    negative error code.
  */
 int kshark_import_dstream(struct kshark_context *kshark_ctx,
-			  struct kshark_config_doc *conf,
+			  struct kshark_config_doc *conf/*,
 			  struct kshark_entry ***data_rows,
-			  size_t *data_size)
+			  size_t *data_size*/)
 {
 	struct kshark_config_doc *file_conf, *filter_conf;
 	bool ret = false;
 	int sd = -EFAULT;
 
-	*data_size = 0;
-
+// 	*data_size = 0;
 	if (!kshark_type_check(conf, "kshark.config.stream"))
 		return sd;
 
@@ -1796,6 +1858,7 @@ int kshark_import_dstream(struct kshark_context *kshark_ctx,
 	    kshark_config_doc_get(conf, "filters", filter_conf)) {
 		sd = kshark_import_trace_file(kshark_ctx, file_conf);
 		if (sd >= 0) {
+			kshark_import_calib_array(kshark_ctx, sd, conf);
 			ret = kshark_import_all_filters(kshark_ctx, sd,
 							filter_conf);
 			if (!ret) {
@@ -1803,8 +1866,11 @@ int kshark_import_dstream(struct kshark_context *kshark_ctx,
 				return -EFAULT;
 			}
 
-			*data_size = kshark_load_data_entries(kshark_ctx, sd,
-							      data_rows);
+			kshark_handle_all_plugins(kshark_ctx, sd,
+						  KSHARK_PLUGIN_UPDATE);
+
+// 			*data_size = kshark_load_data_entries(kshark_ctx, sd,
+// 							      data_rows);
 		}
 	}
 
@@ -1827,6 +1893,9 @@ kshark_export_all_dstreams_to_json(struct kshark_context *kshark_ctx,
 	for (int i = 0; i < kshark_ctx->n_streams; ++i) {
 		dstream_conf = kshark_export_dstream(kshark_ctx, stream_ids[i],
 						     KS_CONFIG_JSON);
+		if (!dstream_conf)
+			goto fail;
+
 		json_object_array_put_idx(jall_streams, i, dstream_conf->conf_doc);
 
 		/* Free only the kshark_config_doc object. */
@@ -1834,7 +1903,13 @@ kshark_export_all_dstreams_to_json(struct kshark_context *kshark_ctx,
 	}
 
 	json_object_object_add(jobj, "data streams", jall_streams);
+
 	return true;
+
+ fail:
+	json_object_put(jall_streams);
+
+	return false;
 }
 
 /**
@@ -1849,22 +1924,24 @@ kshark_export_all_dstreams_to_json(struct kshark_context *kshark_ctx,
  * @returns True on success, otherwise False.
  */
 bool kshark_export_all_dstreams(struct kshark_context *kshark_ctx,
-				struct kshark_config_doc *conf)
+				struct kshark_config_doc **conf)
 {
-	switch (conf->format) {
+	if (!*conf)
+		*conf = kshark_filter_config_new(KS_CONFIG_JSON);
+
+	if (!*conf)
+		return false;
+
+	switch ((*conf)->format) {
 	case KS_CONFIG_JSON:
 		return kshark_export_all_dstreams_to_json(kshark_ctx,
-							  conf->conf_doc);
+							  (*conf)->conf_doc);
 
 	default:
 		fprintf(stderr, "Document format %d not supported\n",
-			conf->format);
+			(*conf)->format);
 		return false;
 	}
-}
-
-static void __calib(struct kshark_entry *e, int64_t *atgv) {
-	e->ts += atgv[0];
 }
 
 static bool
@@ -1874,72 +1951,31 @@ kshark_import_all_dstreams_from_json(struct kshark_context *kshark_ctx,
 				     size_t *data_size)
 {
 	struct kshark_config_doc dstream_conf;
-	struct kshark_entry **stream_data_rows = NULL, **merged_data_rows;
-	size_t stream_data_size = 0;
-	json_object *jall_streams, *jstream, *jcalib_argv, *jcalib;
-	int sd, i, j, length, calib_length;
-	int64_t *calib_argv = NULL;
+	json_object *jall_streams, *jstream;
+	int sd, i, length;
 
 	if (!json_object_object_get_ex(jobj, "data streams", &jall_streams) ||
 	    json_object_get_type(jall_streams) != json_type_array)
-		goto fail;
+		return false;
 
 	length = json_object_array_length(jall_streams);
 	if (!length)
-		goto fail;
+		return false;
 
 	dstream_conf.format = KS_CONFIG_JSON;
-	jstream = json_object_array_get_idx(jall_streams, 0);
-	dstream_conf.conf_doc = jstream;
-	kshark_import_dstream(kshark_ctx, &dstream_conf, data_rows, data_size);
-
-	for (i = 1; i < length; ++i) {
+	for (i = 0; i < length; ++i) {
 		jstream = json_object_array_get_idx(jall_streams, i);
-
-		if (!json_object_object_get_ex(jstream, "calib. array", &jcalib_argv) ||
-		    json_object_get_type(jcalib_argv) != json_type_array)
-			goto fail;
-
-		calib_length = json_object_array_length(jcalib_argv);
-		if (!calib_length)
-			goto fail;
-
-		calib_argv = calloc(calib_length, sizeof(*calib_argv));
-		for (j = 0; j < calib_length; ++j) {
-			jcalib = json_object_array_get_idx(jcalib_argv, j);
-			calib_argv[j] = json_object_get_int64(jcalib);
-		}
-
 		dstream_conf.conf_doc = jstream;
 
-		sd = kshark_import_dstream(kshark_ctx, &dstream_conf,
-					   &stream_data_rows, &stream_data_size);
+		sd = kshark_import_dstream(kshark_ctx, &dstream_conf);
 
-		merged_data_rows =
-			kshark_data_merge(*data_rows, *data_size,
-					  stream_data_rows, stream_data_size,
-					  __calib, calib_argv);
-
-		free(stream_data_rows);
-		free(*data_rows);
-
-		kshark_ctx->stream[sd]->calib_array = calib_argv;
-		kshark_ctx->stream[sd]->calib_array_size = calib_length;
-
-		stream_data_rows = *data_rows = NULL;
-
-		*data_rows = merged_data_rows;
-		*data_size += stream_data_size;
+		if (sd < 0)
+			return false;
 	}
 
+	*data_size = kshark_load_all_data_entries(kshark_ctx, data_rows);
+
 	return true;
-
- fail:
-	free(*data_rows);
-	free(calib_argv);
-	*data_size = 0;
-
-	return false;
 }
 
 /**

@@ -32,8 +32,6 @@
 
 //! @endcond
 
-extern struct plugin_sched_context *plugin_sched_context_handler;
-
 /** Sched Event identifier. */
 enum class SchedEvent {
 	/** Sched Switch Event. */
@@ -48,7 +46,7 @@ static void pluginDraw(plugin_sched_context *plugin_ctx,
 		       kshark_trace_histo *histo,
 		       kshark_entry_collection *col,
 		       SchedEvent e,
-		       int pid,
+		       int sd, int pid,
 		       KsPlot::Graph *graph,
 		       KsPlot::PlotObjList *shapes)
 {
@@ -56,7 +54,7 @@ static void pluginDraw(plugin_sched_context *plugin_ctx,
 	ssize_t indexClose(0), indexOpen(0), indexME(0);
 	std::function<void(int)> ifSchedBack;
 	KsPlot::Rectangle *rec = nullptr;
-	int height = graph->getHeight() * .3;
+	int height = graph->height() * .3;
 
 	auto openBox = [&] (const KsPlot::Point &p)
 	{
@@ -108,11 +106,12 @@ static void pluginDraw(plugin_sched_context *plugin_ctx,
 		 * condition defined by kshark_match_pid.
 		 */
 		entryClose = ksmodel_get_entry_back(histo, bin, false,
-						 plugin_switch_match_entry_pid,
-						 pid, col, &indexClose);
+						    plugin_switch_match_entry_pid,
+						    sd, &pid, col, &indexClose);
 
 		entryME = ksmodel_get_task_missed_events(histo,
-							 bin, pid,
+							 bin,
+							 sd, pid,
 							 col,
 							 &indexME);
 
@@ -125,7 +124,7 @@ static void pluginDraw(plugin_sched_context *plugin_ctx,
 			entryOpen =
 				ksmodel_get_entry_back(histo, bin, false,
 						       plugin_switch_match_rec_pid,
-						       pid, col, &indexOpen);
+						       sd, &pid, col, &indexOpen);
 
 		} else {
 			/*
@@ -136,13 +135,13 @@ static void pluginDraw(plugin_sched_context *plugin_ctx,
 			entryOpen =
 				ksmodel_get_entry_back(histo, bin, false,
 						       plugin_wakeup_match_rec_pid,
-						       pid,
+						       sd, &pid,
 						       col,
 						       &indexOpen);
 
 			if (entryOpen) {
 				int cpu = ksmodel_get_cpu_back(histo, bin,
-								      pid,
+								      sd, pid,
 								      false,
 								      col,
 								      nullptr);
@@ -201,7 +200,7 @@ static void pluginDraw(plugin_sched_context *plugin_ctx,
  */
 static void secondPass(kshark_entry **data,
 		       kshark_entry_collection *col,
-		       int pid)
+		       int sd, int pid)
 {
 	if (!col)
 		return;
@@ -219,7 +218,7 @@ static void secondPass(kshark_entry **data,
 		kshark_entry_request *req =
 			kshark_entry_request_alloc(first, n,
 						   plugin_switch_match_rec_pid,
-						   pid,
+						   sd, &pid,
 						   false,
 						   KS_GRAPH_VIEW_FILTER_MASK);
 
@@ -255,7 +254,7 @@ static void secondPass(kshark_entry **data,
  * @param pid: Process Id.
  * @param draw_action: Draw action identifier.
  */
-void plugin_draw(kshark_cpp_argv *argv_c, int pid, int draw_action)
+void plugin_draw(kshark_cpp_argv *argv_c, int sd, int pid, int draw_action)
 {
 	plugin_sched_context *plugin_ctx;
 	kshark_context *kshark_ctx(NULL);
@@ -264,7 +263,7 @@ void plugin_draw(kshark_cpp_argv *argv_c, int pid, int draw_action)
 	if (draw_action != KSHARK_PLUGIN_TASK_DRAW || pid == 0)
 		return;
 
-	plugin_ctx = plugin_sched_context_handler;
+	plugin_ctx = get_sched_context(sd);
 	if (!plugin_ctx || !kshark_instance(&kshark_ctx))
 		return;
 
@@ -275,7 +274,7 @@ void plugin_draw(kshark_cpp_argv *argv_c, int pid, int draw_action)
 	 * coll = NULL.
 	 */
 	col = kshark_find_data_collection(plugin_ctx->collections,
-					  plugin_match_pid, pid);
+					  plugin_match_pid, sd, &pid, 1);
 	if (!col) {
 		/*
 		 * If a data collection for this task does not exist,
@@ -287,26 +286,27 @@ void plugin_draw(kshark_cpp_argv *argv_c, int pid, int draw_action)
 		col = kshark_add_collection_to_list(kshark_ctx,
 						    &plugin_ctx->collections,
 						    data, size,
-						    plugin_match_pid, pid,
+						    plugin_match_pid,
+						    sd, &pid, 1,
 						    KS_TASK_COLLECTION_MARGIN);
 	}
 
 	if (!tracecmd_filter_id_find(plugin_ctx->second_pass_hash, pid)) {
 		/* The second pass for this task is not done yet. */
-		secondPass(argvCpp->_histo->data, col, pid);
+		secondPass(argvCpp->_histo->data, col, sd, pid);
 		tracecmd_filter_id_add(plugin_ctx->second_pass_hash, pid);
 	}
 
 	try {
 		pluginDraw(plugin_ctx, kshark_ctx,
 			   argvCpp->_histo, col,
-			   SchedEvent::Wakeup, pid,
+			   SchedEvent::Wakeup, sd, pid,
 			   argvCpp->_graph, argvCpp->_shapes);
 
-		pluginDraw(plugin_ctx, kshark_ctx,
-			   argvCpp->_histo, col,
-			   SchedEvent::Switch, pid,
-			   argvCpp->_graph, argvCpp->_shapes);
+// 		pluginDraw(plugin_ctx, kshark_ctx,
+// 			   argvCpp->_histo, col,
+// 			   SchedEvent::Switch, sd, pid,
+// 			   argvCpp->_graph, argvCpp->_shapes);
 	} catch (const std::exception &exc) {
 		std::cerr << "Exception in SchedEvents\n" << exc.what();
 	}

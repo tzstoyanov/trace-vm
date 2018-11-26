@@ -150,10 +150,10 @@ void kshark_free_event_handler_list(struct kshark_event_handler *handlers)
  * @param kshark_ctx: Input location for the session context pointer.
  * @param file: The plugin object file to load.
  *
- * @returns Zero on success, or a negative error code on failure.
+ * @returns The plugin object on success, or NULL on failure.
  */
-int kshark_register_plugin(struct kshark_context *kshark_ctx,
-			   const char *file)
+struct kshark_plugin_list *
+kshark_register_plugin(struct kshark_context *kshark_ctx, const char *file)
 {
 	struct kshark_plugin_list *plugin = kshark_ctx->plugins;
 	struct stat st;
@@ -161,7 +161,7 @@ int kshark_register_plugin(struct kshark_context *kshark_ctx,
 
 	while (plugin) {
 		if (strcmp(plugin->file, file) == 0)
-			return -EEXIST;
+			return NULL;
 
 		plugin = plugin->next;
 	}
@@ -169,19 +169,21 @@ int kshark_register_plugin(struct kshark_context *kshark_ctx,
 	ret = stat(file, &st);
 	if (ret < 0) {
 		fprintf(stderr, "plugin %s not found\n", file);
-		return -ENODEV;
+		return NULL;
 	}
 
 	plugin = calloc(sizeof(struct kshark_plugin_list), 1);
 	if (!plugin) {
 		fprintf(stderr, "failed to allocate memory for plugin\n");
-		return -ENOMEM;
+		return NULL;
 	}
+
+	plugin->streams = NULL;
 
 	if (asprintf(&plugin->file, "%s", file) <= 0) {
 		fprintf(stderr,
 			"failed to allocate memory for plugin file name");
-		return -ENOMEM;
+		return NULL;
 	}
 
 	plugin->handle = dlopen(plugin->file, RTLD_NOW | RTLD_GLOBAL);
@@ -200,7 +202,7 @@ int kshark_register_plugin(struct kshark_context *kshark_ctx,
 	plugin->next = kshark_ctx->plugins;
 	kshark_ctx->plugins = plugin;
 
-	return 0;
+	return plugin;
 
  fail:
 	fprintf(stderr, "cannot load plugin '%s'\n%s\n",
@@ -213,7 +215,7 @@ int kshark_register_plugin(struct kshark_context *kshark_ctx,
 
 	free(plugin);
 
-	return EFAULT;
+	return NULL;
 }
 
 /**
@@ -261,6 +263,79 @@ void kshark_free_plugin_list(struct kshark_plugin_list *plugins)
 	}
 }
 
+struct kshark_plugin_list *
+kshark_find_plugin(struct kshark_plugin_list *plugins, const char *file)
+{
+	for (; plugins; plugins = plugins->next)
+		if (strcmp(plugins->file, file) == 0)
+			return plugins;
+
+	return NULL;
+}
+
+void kshark_plugin_add_stream(struct kshark_plugin_list *plugin, int sd)
+{
+	struct kshark_stream_list *stream;
+
+	/* First make sure that the Data Stream has not been added already. */
+	for (stream = plugin->streams; stream; stream = stream->next)
+		if (stream->stream_id == sd)
+			return;
+
+	/* Add the stream to the list. */
+	stream = malloc(sizeof(*stream));
+	stream->stream_id = sd;
+	stream->next = plugin->streams;
+	plugin->streams = stream;
+}
+
+void kshark_plugin_remove_stream(struct kshark_plugin_list *plugin, int sd)
+{
+	struct kshark_stream_list **stream;
+
+	for (stream = &plugin->streams; *stream; stream = &(*stream)->next) {
+		if ((*stream)->stream_id == sd) {
+			struct kshark_stream_list *this_stream;
+
+			this_stream = *stream;
+			*stream = this_stream->next;
+			free(this_stream);
+		}
+	}
+}
+
+int kshark_handle_plugin(struct kshark_context *kshark_ctx,
+			 struct kshark_plugin_list *plugin,
+			 int sd,
+			 enum kshark_plugin_actions task_id)
+{
+	struct kshark_stream_list *stream;
+	int handler_count = 0;
+
+	for (stream = plugin->streams; stream; stream = stream->next) {
+		if (stream->stream_id == sd)
+			switch (task_id) {
+			case KSHARK_PLUGIN_INIT:
+				handler_count = plugin->init(kshark_ctx, sd);
+				break;
+
+			case KSHARK_PLUGIN_UPDATE:
+				plugin->close(kshark_ctx, sd);
+				handler_count = plugin->init(kshark_ctx, sd);
+				break;
+
+			case KSHARK_PLUGIN_CLOSE:
+				handler_count = plugin->close(kshark_ctx, sd);
+				break;
+
+			default:
+				return -EINVAL;
+			}
+	}
+
+	return handler_count;
+}
+
 /**
  * @brief Use this function to initialize/update/deinitialize all registered
  *	  plugins.
@@ -271,30 +346,33 @@ void kshark_free_plugin_list(struct kshark_plugin_list *plugins)
  * @returns The number of successful added/removed plugin handlers on success,
  *	    or a negative error code on failure.
  */
-int kshark_handle_plugins(struct kshark_context *kshark_ctx,
-			  enum kshark_plugin_actions task_id)
+int kshark_handle_all_plugins(struct kshark_context *kshark_ctx, int sd,
+			      enum kshark_plugin_actions task_id)
 {
 	struct kshark_plugin_list *plugin;
 	int handler_count = 0;
 
 	for (plugin = kshark_ctx->plugins; plugin; plugin = plugin->next) {
-		switch (task_id) {
-		case KSHARK_PLUGIN_INIT:
-			handler_count += plugin->init(kshark_ctx);
-			break;
+		handler_count +=
+			kshark_handle_plugin(kshark_ctx, plugin, sd, task_id);
 
-		case KSHARK_PLUGIN_UPDATE:
-			plugin->close(kshark_ctx);
-			handler_count += plugin->init(kshark_ctx);
-			break;
-
-		case KSHARK_PLUGIN_CLOSE:
-			handler_count += plugin->close(kshark_ctx);
-			break;
-
-		default:
-			return -EINVAL;
-		}
+// 		switch (task_id) {
+// 		case KSHARK_PLUGIN_INIT:
+// 			handler_count += plugin->init(kshark_ctx, sd);
+// 			break;
+// 
+// 		case KSHARK_PLUGIN_UPDATE:
+// 			plugin->close(kshark_ctx, sd);
+// 			handler_count += plugin->init(kshark_ctx, sd);
+// 			break;
+// 
+// 		case KSHARK_PLUGIN_CLOSE:
+// 			handler_count += plugin->close(kshark_ctx, sd);
+// 			break;
+// 
+// 		default:
+// 			return -EINVAL;
+// 		}
 	}
 
 	return handler_count;

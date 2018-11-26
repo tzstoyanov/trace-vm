@@ -32,6 +32,8 @@ signals:
 	void dataReload();
 
 private:
+	kshark_data_stream 	*_stream;
+
 	int 			_noHelpHeight;
 
 	QMap<int, QString>	_filters;
@@ -46,7 +48,7 @@ private:
 
 	QLabel		_descrLabel, _sysEvLabel, _opsLabel, _fieldLabel;
 
-	QComboBox	_systemComboBox, _eventComboBox;
+	QComboBox	_streamComboBox, _systemComboBox, _eventComboBox;
 
 	QComboBox	_opsComboBox, _fieldComboBox;
 
@@ -74,15 +76,17 @@ private:
 
 	QStringList _operators();
 
-	void _getFilters(struct kshark_context *kshark_ctx);
+	void _getFilters();
 
-	void _makeFilterTable(struct kshark_context *kshark_ctx);
+	void _makeFilterTable();
 
 	QStringList _getEventFormatFields(struct tep_event *event);
 
-	void _setSystemCombo(struct kshark_context *kshark_ctx);
+	void _setSystemCombo();
 
 private slots:
+	void _streamChanged(const QString&);
+
 	void _systemChanged(const QString&);
 
 	void _eventChanged(const QString&);

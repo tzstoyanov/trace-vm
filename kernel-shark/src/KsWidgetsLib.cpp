@@ -10,11 +10,12 @@
  */
 
 // KernelShark
-#include "libkshark.h"
-#include "KsUtils.hpp"
 #include "KsCmakeDef.hpp"
 #include "KsPlotTools.hpp"
 #include "KsWidgetsLib.hpp"
+
+namespace KsWidgetsLib
+{
 
 /**
  * @brief Create KsProgressBar.
@@ -76,9 +77,6 @@ KsMessageDialog::KsMessageDialog(QString message, QWidget *parent)
 	this->setLayout(&_layout);
 }
 
-namespace KsWidgetsLib
-{
-
 /**
  * @brief Launch a File exists dialog. Use this function to ask the user
  * before overwriting an existing file.
@@ -111,15 +109,19 @@ bool fileExistsDialog(QString fileName)
  * @param name: The name of this widget.
  * @param parent: The parent of this widget.
  */
-KsCheckBoxWidget::KsCheckBoxWidget(const QString &name, QWidget *parent)
+KsCheckBoxWidget::KsCheckBoxWidget(int sd, const QString &name,
+				   QWidget *parent)
 : QWidget(parent),
   _tb(this),
+  _sd(sd),
   _allCb("all", &_tb),
+  _allCbAction(nullptr),
   _cbWidget(this),
   _cbLayout(&_cbWidget),
   _topLayout(this),
+  _stramLabel("", this),
   _name(name),
-  _nameLabel(name + ":  ",&_tb)
+  _nameLabel(name + ":  ", &_tb)
 {
 	setWindowTitle(_name);
 	setMinimumHeight(SCREEN_HEIGHT / 2);
@@ -129,8 +131,11 @@ KsCheckBoxWidget::KsCheckBoxWidget(const QString &name, QWidget *parent)
 
 	_cbWidget.setLayout(&_cbLayout);
 
+	_topLayout.addWidget(&_stramLabel);
+
 	_tb.addWidget(&_nameLabel);
-	_tb.addWidget(&_allCb);
+	_allCbAction = _tb.addWidget(&_allCb);
+
 	_topLayout.addWidget(&_tb);
 
 	_topLayout.addWidget(&_cbWidget);
@@ -138,6 +143,7 @@ KsCheckBoxWidget::KsCheckBoxWidget(const QString &name, QWidget *parent)
 
 	setLayout(&_topLayout);
 	_allCb.setCheckState(Qt::Checked);
+// 	setVisibleCbAll(false);
 }
 
 /**
@@ -218,15 +224,19 @@ void KsCheckBoxWidget::_checkAll(bool st)
  * @param cbw: A KsCheckBoxWidget to be nested in this dialog.
  * @param parent: The parent of this widget.
  */
-KsCheckBoxDialog::KsCheckBoxDialog(KsCheckBoxWidget *cbw, QWidget *parent)
-: QDialog(parent), _checkBoxWidget(cbw),
+KsCheckBoxDialog::KsCheckBoxDialog(QVector<KsCheckBoxWidget *> cbws, QWidget *parent)
+: QDialog(parent), _checkBoxWidgets(cbws),
   _applyButton("Apply", this),
   _cancelButton("Cancel", this)
 {
 	int buttonWidth;
 
-	setWindowTitle(cbw->name());
-	_topLayout.addWidget(_checkBoxWidget);
+	if (!cbws.isEmpty())
+		setWindowTitle(cbws[0]->name());
+
+	for (auto const &w: _checkBoxWidgets)
+		_cbLayout.addWidget(w);
+	_topLayout.addLayout(&_cbLayout);
 
 	buttonWidth = STRING_WIDTH("--Cancel--");
 	_applyButton.setFixedWidth(buttonWidth);
@@ -256,16 +266,170 @@ KsCheckBoxDialog::KsCheckBoxDialog(KsCheckBoxWidget *cbw, QWidget *parent)
 
 void KsCheckBoxDialog::_applyPress()
 {
-	QVector<int> vec = _checkBoxWidget->getCheckedIds();
-	emit apply(vec);
+	QVector<int> vec;
 
 	/*
 	 * Disconnect _applyButton. This is done in order to protect
 	 * against multiple clicks.
 	 */
 	disconnect(_applyButtonConnection);
+
+	for (auto const &w: _checkBoxWidgets) {
+		vec = w->getCheckedIds();
+		emit apply(w->sd(), vec);
+	}
 }
 
+KsComboPlotDialog::KsComboPlotDialog(QWidget *parent)
+: _hostStreamLabel("Host data stream:"),
+  _guestStreamLabel("Guest data stream"),
+  _hostStreamComboBox(this),
+  _guestStreamComboBox(this),
+  _vcpuCheckBoxWidget(nullptr),
+  _hostCheckBoxWidget(nullptr),
+  _applyButton("Apply", this),
+  _cancelButton("Cancel", this)
+{
+	kshark_context *kshark_ctx(nullptr);
+	int *streamIds, buttonWidth;
+	int sdHost(0), sdGuest(1);
+	QStringList streamList;
+
+	auto lamAddLine = [&] {
+		QFrame* line = new QFrame();
+
+		line->setFrameShape(QFrame::HLine);
+		line->setFrameShadow(QFrame::Sunken);
+		_topLayout.addWidget(line);
+	};
+
+	setWindowTitle("Combo Plots");
+
+	if (!kshark_instance(&kshark_ctx) ||
+	    kshark_ctx->n_streams < 2)
+		return;
+
+	streamIds = kshark_all_streams(kshark_ctx);
+	_hostStreamComboBox.addItem(QString::number(streamIds[0]));
+	for (int i = 1; i < kshark_ctx->n_streams; ++i) {
+		_hostStreamComboBox.addItem(QString::number(streamIds[i]));
+		_guestStreamComboBox.addItem(QString::number(streamIds[i]));
+	}
+
+	_streamMenuLayout.addWidget(&_hostStreamLabel, 0, 0);
+	_streamMenuLayout.addWidget(&_hostStreamComboBox, 0, 1);
+
+	_streamMenuLayout.addWidget(&_guestStreamLabel, 1, 0);
+	_streamMenuLayout.addWidget(&_guestStreamComboBox, 1, 1);
+
+	_topLayout.addLayout(&_streamMenuLayout);
+
+	lamAddLine();
+
+	_hostCheckBoxWidget = new KsTasksCheckBoxWidget(sdHost, true, this);
+	_hostCheckBoxWidget->setStream(QString(kshark_ctx->stream[sdHost]->file));
+	_hostCheckBoxWidget->setSingleSelection();
+	_hostCheckBoxWidget->setDefault(false);
+
+	_vcpuCheckBoxWidget = new KsCPUCheckBoxWidget(sdGuest, this);
+	_vcpuCheckBoxWidget->setStream(QString(kshark_ctx->stream[sdGuest]->file));
+	_vcpuCheckBoxWidget->setSingleSelection();
+	_vcpuCheckBoxWidget->setDefault(false);
+
+	_cbLayout.addWidget(_hostCheckBoxWidget);
+	_cbLayout.addWidget(_vcpuCheckBoxWidget);
+
+	_topLayout.addLayout(&_cbLayout);
+
+	buttonWidth = STRING_WIDTH("--Cancel--");
+	_applyButton.setFixedWidth(buttonWidth);
+	_cancelButton.setFixedWidth(buttonWidth);
+
+	_buttonLayout.addWidget(&_applyButton);
+	_applyButton.setAutoDefault(false);
+
+	_buttonLayout.addWidget(&_cancelButton);
+	_cancelButton.setAutoDefault(false);
+
+	_buttonLayout.setAlignment(Qt::AlignLeft);
+	_topLayout.addLayout(&_buttonLayout);
+
+	_applyButtonConnection =
+		connect(&_applyButton,	&QPushButton::pressed,
+			this,		&KsComboPlotDialog::_applyPress);
+
+	connect(&_applyButton,	&QPushButton::pressed,
+		this,		&QWidget::close);
+
+	connect(&_cancelButton,	&QPushButton::pressed,
+		this,		&QWidget::close);
+
+	/*
+	 * Using the old Signal-Slot syntax because QComboBox::currentIndexChanged
+	 * has overloads.
+	 */
+	connect(&_hostStreamComboBox,	SIGNAL(currentIndexChanged(const QString &)),
+		this,			SLOT(_hostStreamChanged(const QString &)));
+
+	connect(&_guestStreamComboBox,	SIGNAL(currentIndexChanged(const QString &)),
+		this,			SLOT(_guestStreamChanged(const QString &)));
+
+	setLayout(&_topLayout);
+}
+
+void KsComboPlotDialog::_applyPress()
+{
+	QVector<int> combo(4);
+
+	/*
+	 * Disconnect _applyButton. This is done in order to protect
+	 * against multiple clicks.
+	 */
+	disconnect(_applyButtonConnection);
+
+	combo[0] = _hostStreamComboBox.currentText().toInt();
+	combo[1] = _hostCheckBoxWidget->getCheckedIds()[0];
+	combo[2] = _guestStreamComboBox.currentText().toInt();
+	combo[3] = _vcpuCheckBoxWidget->getCheckedIds()[0];
+
+	emit apply(-1, combo);
+}
+
+void KsComboPlotDialog::_hostStreamChanged(const QString &sdStr)
+{
+	qInfo() << "_hostStreamChanged";
+	kshark_context *kshark_ctx(nullptr);
+	int *streamIds, sdHost;
+	QStringList streamList;
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	sdHost = sdStr.toInt();
+	_guestStreamComboBox.clear();
+	streamIds = kshark_all_streams(kshark_ctx);
+	for (int i = 0; i < kshark_ctx->n_streams; ++i)
+		if (sdHost != streamIds[i])
+			_guestStreamComboBox.addItem(QString::number(streamIds[i]));
+}
+
+void KsComboPlotDialog::_guestStreamChanged(const QString &sdStr)
+{
+	qInfo() << "_guestStreamChanged";
+	kshark_context *kshark_ctx(nullptr);
+	int sdGuest;
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	sdGuest = sdStr.toInt();
+
+	delete _vcpuCheckBoxWidget;
+
+	_vcpuCheckBoxWidget = new KsCPUCheckBoxWidget(sdGuest, this);
+	_vcpuCheckBoxWidget->setDefault(false);
+	_cbLayout.addWidget(_vcpuCheckBoxWidget);
+}
 
 /**
  * @brief Create KsCheckBoxTable.
@@ -359,9 +523,9 @@ void KsCheckBoxTable::_doubleClicked(int row, int col)
  * @param name: The name of this widget.
  * @param parent: The parent of this widget.
  */
-KsCheckBoxTableWidget::KsCheckBoxTableWidget(const QString &name,
+KsCheckBoxTableWidget::KsCheckBoxTableWidget(int sd, const QString &name,
 					     QWidget *parent)
-: KsCheckBoxWidget(name, parent),
+: KsCheckBoxWidget(sd, name, parent),
   _table(this)
 {
 	connect(&_table,	&KsCheckBoxTable::changeState,
@@ -514,9 +678,9 @@ void KsCheckBoxTree::mousePressEvent(QMouseEvent *event)
  * @param name: The name of this widget.
  * @param parent: The parent of this widget.
  */
-KsCheckBoxTreeWidget::KsCheckBoxTreeWidget(const QString &name,
+KsCheckBoxTreeWidget::KsCheckBoxTreeWidget(int sd, const QString &name,
 					   QWidget *parent)
-: KsCheckBoxWidget(name, parent),
+: KsCheckBoxWidget(sd, name, parent),
   _tree(this)
 {
 	connect(&_tree,	&KsCheckBoxTree::verify,
@@ -614,24 +778,29 @@ void KsCheckBoxTreeWidget::_verify()
 /**
  * @brief Create KsCPUCheckBoxWidget.
  *
- * @param tep: Trace event parseer.
+ * @param sd: Data stream identifier.
  * @param parent: The parent of this widget.
  */
-KsCPUCheckBoxWidget::KsCPUCheckBoxWidget(struct tep_handle *tep,
-					 QWidget *parent)
-: KsCheckBoxTreeWidget("CPUs", parent)
+KsCPUCheckBoxWidget::KsCPUCheckBoxWidget(int sd, QWidget *parent)
+: KsCheckBoxTreeWidget(sd, "CPUs", parent)
 {
 	int nCPUs(0), height(FONT_HEIGHT * 1.5);
+	kshark_context *kshark_ctx(nullptr);
+	kshark_data_stream *stream;
 	KsPlot::ColorTable colors;
 	QString style;
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
 
 	style = QString("QTreeView::item { height: %1 ;}").arg(height);
 	_tree.setStyleSheet(style);
 
 	_initTree();
 
-	if (tep)
-		nCPUs = tep_get_cpus(tep);
+	stream = kshark_get_data_stream(kshark_ctx, sd);
+	if (stream)
+		nCPUs = tep_get_cpus(stream->pevent);
 
 	_id.resize(nCPUs);
 	_cb.resize(nCPUs);
@@ -656,22 +825,107 @@ KsCPUCheckBoxWidget::KsCPUCheckBoxWidget(struct tep_handle *tep,
 /**
  * @brief Create KsEventsCheckBoxWidget.
  *
- * @param tep: Trace event parseer.
+ * @param sd: Data stream identifier.
  * @param parent: The parent of this widget.
  */
-KsEventsCheckBoxWidget::KsEventsCheckBoxWidget(struct tep_handle *tep,
+// KsEventsCheckBoxWidget::KsEventsCheckBoxWidget(int sd, QWidget *parent)
+// : KsCheckBoxTreeWidget(sd, "Events", parent)
+// {
+// 	QTreeWidgetItem *sysItem, *evtItem;
+// 	tep_event_format **events(nullptr);
+// 	kshark_context *kshark_ctx(nullptr);
+// 	kshark_data_stream *stream;
+// 	QString sysName, evtName;
+// 	int nEvts(0), i(0);
+// 
+// 	if (!kshark_instance(&kshark_ctx))
+// 		return;
+// 
+// 	stream = kshark_get_data_stream(kshark_ctx, sd);
+// 	if (stream) {
+// 		nEvts = tep_get_events_count(stream->pevent);
+// 		events = tep_list_events(stream->pevent, TEP_EVENT_SORT_SYSTEM);
+// 	}
+// 
+// 	_initTree();
+// 	_id.resize(nEvts);
+// 	_cb.resize(nEvts);
+// 
+// 	while (i < nEvts) {
+// 		sysName = events[i]->system;
+// 		sysItem = new QTreeWidgetItem;
+// 		sysItem->setText(0, sysName);
+// 		sysItem->setCheckState(0, Qt::Checked);
+// 		_tree.addTopLevelItem(sysItem);
+// 
+// 		while (sysName == events[i]->system) {
+// 			evtName = events[i]->name;
+// 			evtItem = new QTreeWidgetItem;
+// 			evtItem->setText(0, evtName);
+// 			evtItem->setCheckState(0, Qt::Checked);
+// 			evtItem->setFlags(evtItem->flags() |
+// 					  Qt::ItemIsUserCheckable);
+// 
+// 			sysItem->addChild(evtItem);
+// 
+// 			_id[i] = events[i]->id;
+// 			_cb[i] = evtItem;
+// 
+// 			if (++i == nEvts)
+// 				break;
+// 		}
+// 	}
+// 
+// 	_tree.sortItems(0, Qt::AscendingOrder);
+// 	_adjustSize();
+// }
+
+KsEventsCheckBoxWidget::KsEventsCheckBoxWidget(tep_handle *pevent,
 					       QWidget *parent)
-: KsCheckBoxTreeWidget("Events", parent)
+: KsCheckBoxTreeWidget(-1, "Events", parent)
+{
+	tep_event **events;
+	int nEvts;
+
+	if (pevent) {
+		nEvts = tep_get_events_count(pevent);
+		events = tep_list_events(pevent,
+					TEP_EVENT_SORT_SYSTEM);
+		_makeItems(events, nEvts);
+	}
+}
+
+/**
+ * @brief Create KsEventsCheckBoxWidget.
+ *
+ * @param pevent: Page event used to parse the page.
+ * @param parent: The parent of this widget.
+ */
+KsEventsCheckBoxWidget::KsEventsCheckBoxWidget(int sd, QWidget *parent)
+: KsCheckBoxTreeWidget(sd, "Events", parent)
+{
+	kshark_context *kshark_ctx(nullptr);
+	kshark_data_stream *stream;
+	tep_event **events;
+	int nEvts(0);
+
+	if (!kshark_instance(&kshark_ctx))
+		return;
+
+	stream = kshark_get_data_stream(kshark_ctx, sd);
+	if (stream) {
+		nEvts = tep_get_events_count(stream->pevent);
+		events = tep_list_events(stream->pevent,
+					 TEP_EVENT_SORT_SYSTEM);
+		_makeItems(events, nEvts);
+	}
+}
+
+void KsEventsCheckBoxWidget::_makeItems(tep_event **events, int nEvts)
 {
 	QTreeWidgetItem *sysItem, *evtItem;
-	tep_event **events(nullptr);
 	QString sysName, evtName;
-	int nEvts(0), i(0);
-
-	if (tep) {
-		nEvts = tep_get_events_count(tep);
-		events = tep_list_events(tep, TEP_EVENT_SORT_SYSTEM);
-	}
+	int i(0);
 
 	_initTree();
 	_id.resize(nEvts);
@@ -719,16 +973,17 @@ void KsEventsCheckBoxWidget::removeSystem(QString name) {
 /**
  * @brief Create KsTasksCheckBoxWidget.
  *
- * @param pevent: Page event used to parse the page.
+ * @param sd: Data stream identifier.
  * @param cond: If True make a "Show Task" widget. Otherwise make "Hide Task".
  * @param parent: The parent of this widget.
  */
-KsTasksCheckBoxWidget::KsTasksCheckBoxWidget(struct tep_handle *pevent,
-					     bool cond, QWidget *parent)
-: KsCheckBoxTableWidget("Tasks", parent)
+KsTasksCheckBoxWidget::KsTasksCheckBoxWidget(int sd, bool cond, QWidget *parent)
+: KsCheckBoxTableWidget(sd, "Tasks", parent),
+  _cond(cond)
 {
 	kshark_context *kshark_ctx(nullptr);
 	QTableWidgetItem *pidItem, *comItem;
+	kshark_data_stream *stream;
 	KsPlot::ColorTable colors;
 	QStringList headers;
 	const char *comm;
@@ -737,12 +992,16 @@ KsTasksCheckBoxWidget::KsTasksCheckBoxWidget(struct tep_handle *pevent,
 	if (!kshark_instance(&kshark_ctx))
 		return;
 
+	stream = kshark_get_data_stream(kshark_ctx, sd);
+	if (!stream)
+		return;
+
 	if (_cond)
 		headers << "Show" << "Pid" << "Task";
 	else
 		headers << "Hide" << "Pid" << "Task";
 
-	_id = KsUtils::getPidList();
+	_id = KsUtils::getPidList(sd);
 	nTasks = _id.count();
 	_initTable(headers, nTasks);
 	colors = KsPlot::getTaskColorTable();
@@ -752,7 +1011,7 @@ KsTasksCheckBoxWidget::KsTasksCheckBoxWidget(struct tep_handle *pevent,
 		pidItem	= new QTableWidgetItem(tr("%1").arg(pid));
 		_table.setItem(i, 1, pidItem);
 
-		comm = tep_data_comm_from_pid(kshark_ctx->pevent, pid);
+		comm = tep_data_comm_from_pid(stream->pevent, pid);
 		comItem = new QTableWidgetItem(tr(comm));
 
 		pidItem->setBackgroundColor(QColor(colors[pid].r(),
@@ -774,9 +1033,9 @@ KsTasksCheckBoxWidget::KsTasksCheckBoxWidget(struct tep_handle *pevent,
  * @param pluginList: A list of plugin names.
  * @param parent: The parent of this widget.
  */
-KsPluginCheckBoxWidget::KsPluginCheckBoxWidget(QStringList pluginList,
+KsPluginCheckBoxWidget::KsPluginCheckBoxWidget(int sd, QStringList pluginList,
 					       QWidget *parent)
-: KsCheckBoxTableWidget("Plugins", parent)
+: KsCheckBoxTableWidget(sd, "Plugins", parent)
 {
 	QTableWidgetItem *nameItem, *infoItem;
 	QStringList headers;

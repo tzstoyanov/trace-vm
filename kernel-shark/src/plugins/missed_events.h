@@ -21,7 +21,7 @@ extern "C" {
 #endif
 
 void draw_missed_events(struct kshark_cpp_argv *argv,
-			int pid, int draw_action);
+			int sd, int pid, int draw_action);
 
 #ifdef __cplusplus
 }

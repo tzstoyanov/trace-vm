@@ -245,7 +245,8 @@ void KsTraceViewer::_onCustomContextMenu(const QPoint &point)
 		 * of the row number in the source model.
 		 */
 		size_t row = _proxyModel.mapRowFromSource(i.row());
-		KsQuickContextMenu menu(_data, row, _mState, this);
+
+		KsQuickContextMenu menu(_mState, _data, row, this);
 
 		/*
 		 * Note that this slot was connected to the
@@ -457,7 +458,7 @@ void KsTraceViewer::clearSelection()
 /** Switch the Dual marker. */
 void KsTraceViewer::markSwitch()
 {
-	int row;
+	size_t row;
 
 	/* The state of the Dual marker has changed. Get the new active marker. */
 	DualMarkerState state = _mState->getState();
@@ -488,7 +489,7 @@ void KsTraceViewer::markSwitch()
 		 * The index in the source model is used to retrieve the value
 		 * of the row number in the proxy model.
 		 */
-		size_t row =_mState->getMarker(state)._pos;
+		row =_mState->getMarker(state)._pos;
 
 		QModelIndex index =
 			_proxyModel.mapFromSource(_model.index(row, 0));
@@ -558,20 +559,29 @@ void KsTraceViewer::keyReleaseEvent(QKeyEvent *event)
 
 void KsTraceViewer::_resizeToContents()
 {
-	int rows, columnSize;
+	int col, rows, columnSize;
 
 	_view.setVisible(false);
 	_view.resizeColumnsToContents();
 	_view.setVisible(true);
 
 	/*
-	 * Because of some unknown reason the first column doesn't get
+	 * Because of some unknown reason some of the columns doesn't get
 	 * resized properly by the code above. We will resize this
 	 * column by hand.
 	 */
+	col = KsViewModel::TRACE_VIEW_STREAM_ID;
+	columnSize = STRING_WIDTH(_model.header()[col]) + FONT_WIDTH;
+	_view.setColumnWidth(col, columnSize);
+
+	col = KsViewModel::TRACE_VIEW_COL_CPU;
+	columnSize = STRING_WIDTH(_model.header()[col]) + FONT_WIDTH * 2;
+	_view.setColumnWidth(col, columnSize);
+
+	col = KsViewModel::TRACE_VIEW_COL_INDEX;
 	rows = _model.rowCount({});
 	columnSize = STRING_WIDTH(QString("%1").arg(rows)) + FONT_WIDTH;
-	_view.setColumnWidth(0, columnSize);
+	_view.setColumnWidth(col, columnSize);
 }
 
 //! @cond Doxygen_Suppress

@@ -155,6 +155,7 @@ static struct kshark_data_stream *kshark_stream_alloc()
 		goto fail;
 
 	stream->file = NULL;
+	stream->calib = NULL;
 	stream->calib_array = NULL;
 	stream->calib_array_size = 0;
 
@@ -283,6 +284,7 @@ int *kshark_all_streams(struct kshark_context *kshark_ctx)
  */
 int kshark_open(struct kshark_context *kshark_ctx, const char *file)
 {
+	struct kshark_plugin_list *plugin;
 	int sd, rt;
 
 	sd = kshark_add_stream(kshark_ctx);
@@ -294,6 +296,9 @@ int kshark_open(struct kshark_context *kshark_ctx, const char *file)
 		return rt;
 
 	kshark_ctx->n_streams++;
+
+	for (plugin = kshark_ctx->plugins; plugin; plugin = plugin->next)
+		kshark_plugin_add_stream(plugin, sd);
 
 	return sd;
 }
@@ -339,6 +344,7 @@ void kshark_close(struct kshark_context *kshark_ctx, int sd)
 
 	stream = kshark_get_data_stream(kshark_ctx, sd);
 	if (stream) {
+		kshark_handle_all_plugins(kshark_ctx, sd, KSHARK_PLUGIN_CLOSE);
 		kshark_stream_close(kshark_ctx->stream[sd]);
 		kshark_stream_free(kshark_ctx->stream[sd]);
 		kshark_ctx->stream[sd] = NULL;
@@ -354,25 +360,13 @@ void kshark_close(struct kshark_context *kshark_ctx, int sd)
 }
 
 /**
- * @brief Deinitialize kshark session. Should be called after closing all
- *	  open trace data files and before your application terminates.
+ * @brief Close all currently open trace data file and free the trace data handle.
  *
- * @param kshark_ctx: Optional input location for session context pointer.
- *		      If it points to a context of a sessuin, that sessuin
- *		      will be deinitialize. If it points to NULL, it will
- *		      deinitialize the current session.
+ * @param kshark_ctx: Input location for the session context pointer.
  */
-void kshark_free(struct kshark_context *kshark_ctx)
+void kshark_close_all(struct kshark_context *kshark_ctx)
 {
 	int i, *stream_ids, n_streams;
-
-	if (kshark_ctx == NULL) {
-		if (kshark_context_handler == NULL)
-			return;
-
-		kshark_ctx = kshark_context_handler;
-		/* kshark_ctx_handler will be set to NULL below. */
-	}
 
 	stream_ids = kshark_all_streams(kshark_ctx);
 
@@ -385,10 +379,32 @@ void kshark_free(struct kshark_context *kshark_ctx)
 		kshark_close(kshark_ctx, stream_ids[i]);
 
 	free(stream_ids);
+}
+
+/**
+ * @brief Deinitialize kshark session. Should be called after closing all
+ *	  open trace data files and before your application terminates.
+ *
+ * @param kshark_ctx: Optional input location for session context pointer.
+ *		      If it points to a context of a sessuin, that sessuin
+ *		      will be deinitialize. If it points to NULL, it will
+ *		      deinitialize the current session.
+ */
+void kshark_free(struct kshark_context *kshark_ctx)
+{
+	if (kshark_ctx == NULL) {
+		if (kshark_context_handler == NULL)
+			return;
+
+		kshark_ctx = kshark_context_handler;
+		/* kshark_ctx_handler will be set to NULL below. */
+	}
+
+	kshark_close_all(kshark_ctx);
+
 	free(kshark_ctx->stream);
 
 	if (kshark_ctx->plugins) {
-		kshark_handle_plugins(kshark_ctx, KSHARK_PLUGIN_CLOSE);
 		kshark_free_plugin_list(kshark_ctx->plugins);
 		kshark_free_event_handler_list(kshark_ctx->event_handlers);
 	}
@@ -676,54 +692,50 @@ static inline void unset_event_filter_flag(struct kshark_context *kshark_ctx,
 	 * stream->filter_mask. The value of the EVENT_VIEW flag in
 	 * stream->filter_mask will be used instead.
 	 */
-	int event_mask = kshark_ctx->filter_mask;
+	int event_mask = kshark_ctx->filter_mask & ~KS_GRAPH_VIEW_FILTER_MASK;
 
 	e->visible &= ~event_mask;
 }
 
-/**
- * @brief This function loops over the array of entries specified by "data"
- *	  and "n_entries" and sets the "visible" fields of each entry
- *	  according to the criteria provided by the filters of the session's
- *	  context. The field "filter_mask" of the session's context is used to
- *	  control the level of visibility/invisibility of the entries which
- *	  are filtered-out.
- *	  WARNING: Do not use this function if the advanced filter is set.
- *	  Applying the advanced filter requires access to prevent_record,
- *	  hence the data has to be reloaded using kshark_load_data_entries().
- *
- * @param kshark_ctx: Input location for the session context pointer.
- * @param sd: Data stream identifier.
- * @param data: Input location for the trace data to be filtered.
- * @param n_entries: The size of the inputted data.
- */
-void kshark_filter_entries(struct kshark_context *kshark_ctx, int sd,
+static void filter_entries(struct kshark_context *kshark_ctx, int sd,
 			   struct kshark_entry **data, size_t n_entries)
 {
-	struct kshark_data_stream *stream;
-	int i;
+	struct kshark_data_stream *stream = NULL;
+	size_t i;
 
-	stream = kshark_get_data_stream(kshark_ctx, sd);
-	if (!stream)
-		return;
+	if (sd >= 0) {
+		/* We will filter particular Data stream. */
+		stream = kshark_get_data_stream(kshark_ctx, sd);
+		if (!stream)
+			return;
 
-	if (stream->advanced_event_filter->filters) {
-		/* The advanced filter is set. */
-		fprintf(stderr,
-			"Failed to filter (sd = %i)!\n", sd);
-		fprintf(stderr,
-			"Reset the Advanced filter or reload the data.\n");
-		return;
+		if (stream->advanced_event_filter->filters) {
+			/* The advanced filter is set. */
+			fprintf(stderr,
+				"Failed to filter (sd = %i)!\n", sd);
+			fprintf(stderr,
+				"Reset the Advanced filter or reload the data.\n");
+
+			return;
+		}
+
+		if (!kshark_filter_is_set(kshark_ctx, sd))
+			return;
 	}
-
-	if (!kshark_filter_is_set(kshark_ctx, sd))
-		return;
 
 	/* Apply only the Id filters. */
 	for (i = 0; i < n_entries; ++i) {
-		/* Chack is the entry belongs to this stream. */
-		if (data[i]->stream_id != sd)
-			continue;
+		if (sd >= 0) {
+			/*
+			 * We only filter particular stream. Chack is the entry
+			 * belongs to this stream.
+			 */
+			if (data[i]->stream_id != sd)
+				continue;
+		} else {
+			/* We filter all streams. */
+			stream = kshark_ctx->stream[data[i]->stream_id];
+		}
 
 		/* Start with and entry which is visible everywhere. */
 		data[i]->visible = 0xFF;
@@ -740,6 +752,50 @@ void kshark_filter_entries(struct kshark_context *kshark_ctx, int sd,
 		if (!kshark_show_task(stream, data[i]->pid))
 			data[i]->visible &= ~kshark_ctx->filter_mask;
 	}
+}
+
+/**
+ * @brief This function loops over the array of entries specified by "data"
+ *	  and "n_entries" and sets the "visible" fields of each entry from a
+ *	  given Data stream according to the criteria provided by the filters
+ *	  of the session's context. The field "filter_mask" of the session's
+ *	  context is used to control the level of visibility/invisibility of
+ *	  the entries which are filtered-out.
+ *	  WARNING: Do not use this function if the advanced filter is set.
+ *	  Applying the advanced filter requires access to prevent_record,
+ *	  hence the data has to be reloaded using kshark_load_data_entries().
+ *
+ * @param kshark_ctx: Input location for the session context pointer.
+ * @param sd: Data stream identifier.
+ * @param data: Input location for the trace data to be filtered.
+ * @param n_entries: The size of the inputted data.
+ */
+void kshark_filter_stream_entries(struct kshark_context *kshark_ctx, int sd,
+			   struct kshark_entry **data, size_t n_entries)
+{
+	if (sd >= 0)
+		filter_entries(kshark_ctx, sd, data, n_entries);
+}
+
+/**
+ * @brief This function loops over the array of entries specified by "data"
+ *	  and "n_entries" and sets the "visible" fields of each entry from
+ *	  all Data stream according to the criteria provided by the filters
+ *	  of the session's context. The field "filter_mask" of the session's
+ *	  context is used to control the level of visibility/invisibility of
+ *	  the entries which are filtered-out.
+ *	  WARNING: Do not use this function if the advanced filter is set.
+ *	  Applying the advanced filter requires access to prevent_record,
+ *	  hence the data has to be reloaded using kshark_load_data_entries().
+ *
+ * @param kshark_ctx: Input location for the session context pointer.
+ * @param data: Input location for the trace data to be filtered.
+ * @param n_entries: The size of the inputted data.
+ */
+void kshark_filter_all_entries(struct kshark_context *kshark_ctx,
+			       struct kshark_entry **data, size_t n_entries)
+{
+	filter_entries(kshark_ctx, -1, data, n_entries);
 }
 
 /**
@@ -941,6 +997,11 @@ static size_t get_records(struct kshark_context *kshark_ctx, int sd,
 					entry = &temp_rec->entry;
 					missed_events_action(kshark_ctx, rec, entry);
 
+					if (stream->calib && stream->calib_array)
+						stream->calib(entry, stream->calib_array);
+
+					entry->stream_id = sd;
+
 					temp_next = &temp_rec->next;
 					++count;
 
@@ -951,6 +1012,9 @@ static size_t get_records(struct kshark_context *kshark_ctx, int sd,
 				entry = &temp_rec->entry;
 				kshark_set_entry_values(stream, rec, entry);
 				entry->stream_id = sd;
+
+				if (stream->calib && stream->calib_array)
+					stream->calib(entry, stream->calib_array);
 
 				/* Execute all plugin-provided actions (if any). */
 				evt_handler = kshark_ctx->event_handlers;
@@ -1100,6 +1164,7 @@ ssize_t kshark_load_data_entries(struct kshark_context *kshark_ctx, int sd,
 
 	free_rec_list(rec_list, n_cpus, type);
 	*data_rows = rows;
+
 	return total;
 
  fail_free:
@@ -1181,6 +1246,45 @@ ssize_t kshark_load_data_records(struct kshark_context *kshark_ctx, int sd,
  fail:
 	fprintf(stderr, "Failed to allocate memory during data loading.\n");
 	return -ENOMEM;
+}
+
+ssize_t kshark_load_all_data_entries(struct kshark_context *kshark_ctx,
+				     struct kshark_entry ***data_rows)
+{
+	size_t data_size = 0;;
+	int i, *stream_ids, sd;
+
+	if (!kshark_ctx->n_streams)
+		return data_size;
+
+	stream_ids = kshark_all_streams(kshark_ctx);
+	sd = stream_ids[0];
+
+	data_size = kshark_load_data_entries(kshark_ctx, sd, data_rows);
+
+	for (i = 1; i < kshark_ctx->n_streams; ++i) {
+		struct kshark_entry **stream_data_rows = NULL;
+		struct kshark_entry **merged_data_rows;
+		size_t stream_data_size;
+
+		sd = stream_ids[i];
+		stream_data_size = kshark_load_data_entries(kshark_ctx, sd,
+							    &stream_data_rows);
+
+		merged_data_rows =
+			kshark_data_merge(*data_rows, data_size,
+					  stream_data_rows, stream_data_size);
+
+		free(stream_data_rows);
+		free(*data_rows);
+
+		stream_data_rows = *data_rows = NULL;
+
+		*data_rows = merged_data_rows;
+		data_size += stream_data_size;
+	}
+
+	return data_size;
 }
 
 /**
@@ -1742,9 +1846,9 @@ ssize_t kshark_find_record_by_time(uint64_t time,
  *	    Else false.
  */
 bool kshark_match_pid(struct kshark_context *kshark_ctx,
-		      struct kshark_entry *e, int sd, int pid)
+		      struct kshark_entry *e, int sd, int *pid)
 {
-	if (e->stream_id == sd && e->pid == pid)
+	if (e->stream_id == sd && e->pid == *pid)
 		return true;
 
 	return false;
@@ -1762,12 +1866,29 @@ bool kshark_match_pid(struct kshark_context *kshark_ctx,
  *	    Else false.
  */
 bool kshark_match_cpu(struct kshark_context *kshark_ctx,
-		      struct kshark_entry *e, int sd, int cpu)
+		      struct kshark_entry *e, int sd, int *cpu)
 {
-	if (e->stream_id == sd && e->cpu == cpu)
+	if (e->stream_id == sd && e->cpu == *cpu)
 		return true;
 
 	return false;
+}
+
+/**
+ * @brief Simple Pid matching function to be user for data requests.
+ *
+ * @param kshark_ctx: Input location for the session context pointer.
+ * @param e: kshark_entry to be checked.
+ * @param sd: Data stream identifier.
+ * @param pid: Matching condition value.
+ *
+ * @returns True if the event Id of the entry matches the value of "event_id".
+ *	    Else false.
+ */
+bool kshark_match_event_id(struct kshark_context *kshark_ctx,
+			   struct kshark_entry *e, int sd, int *event_id)
+{
+	return e->stream_id == sd && e->event_id == *event_id;
 }
 
 /**
@@ -1791,7 +1912,7 @@ bool kshark_match_cpu(struct kshark_context *kshark_ctx,
  */
 struct kshark_entry_request *
 kshark_entry_request_alloc(size_t first, size_t n,
-			   matching_condition_func cond, int sd, int val,
+			   matching_condition_func cond, int sd, int *values,
 			   bool vis_only, int vis_mask)
 {
 	struct kshark_entry_request *req = malloc(sizeof(*req));
@@ -1807,7 +1928,7 @@ kshark_entry_request_alloc(size_t first, size_t n,
 	req->n = n;
 	req->cond = cond;
 	req->sd = sd;
-	req->val = val;
+	req->values = values;
 	req->vis_only = vis_only;
 	req->vis_mask = vis_mask;
 
@@ -1861,7 +1982,7 @@ get_entry(const struct kshark_entry_request *req,
 	 */
 	assert((inc > 0 && start < end) || (inc < 0 && start > end));
 	for (i = start; i != end; i += inc) {
-		if (req->cond(kshark_ctx, data[i], req->sd, req->val)) {
+		if (req->cond(kshark_ctx, data[i], req->sd, req->values)) {
 			/*
 			 * Data satisfying the condition has been found.
 			 */
@@ -1945,87 +2066,89 @@ kshark_get_entry_back(const struct kshark_entry_request *req,
 	return get_entry(req, data, index, req->first, end, -1);
 }
 
+void kshark_offset_calib(struct kshark_entry *e, int64_t *atgv)
+{
+	e->ts += atgv[0];
+}
+
+void kshark_linear_clock_calib(struct kshark_entry *e, int64_t *atgv)
+{
+	e->ts = atgv[0] + e->ts * atgv[1];
+}
+
+
+static size_t copy_prior_data(struct kshark_entry **merged_data,
+			      struct kshark_entry **prior_data,
+			      size_t a_size,
+			      uint64_t t)
+{
+	size_t mid, l = 0, h = a_size - 1;
+
+	/*
+	 * After executing the BSEARCH macro, "l" will be the index of the last
+	 * prior entry having timestamp < t  and "h" will be the index of the
+	 * first prior entry having timestamp >= t.
+	 */
+	BSEARCH(h, l, prior_data[mid]->ts < t);
+
+	/*
+	 * Copy all entries before "t" (in time).
+	 */
+	memcpy(merged_data, prior_data, h * sizeof(*prior_data));
+
+	return h;
+}
+
 /**
  * @brief Merge two trace data streams.
  *
- * @param prior_data: Input location for the prior trace data. The clock used
- *		      to record the prior data will be used by the merged data.
- * @param prior_size: The size of the prior trace data.
- * @param associated_data: Input location for the trace data to be merged to
- *			   the prior. The clock of the associated data will be
- * 			   calibrated in order to be compatible with the clock
- * 			   of the prior data.
- * @param associated_size: The size of the associated trace data.
- * @param calib: Callback function providing the calibration of the clock of
- *		 the associated data.
- * @param argv: Array of arguments for the calibration function.
+ * @param data_a: Input location for the prior trace data.
+ * @param a_size: The size of the prior trace data.
+ * @param data_b: Input location for the trace data to be merged to
+ *			   the prior.
+ * @param b_size: The size of the associated trace data.
  *
  * @returns Merged and sorted in time trace data. The user is responsible for
  *	    freeing the elements of the outputted array.
  */
-struct kshark_entry **kshark_data_merge(struct kshark_entry **prior_data,
-					size_t prior_size,
-					struct kshark_entry **associated_data,
-					size_t associated_size,
-					time_calib_func calib,
-					int64_t *argv)
+struct kshark_entry **kshark_data_merge(struct kshark_entry **data_a,
+					size_t a_size,
+					struct kshark_entry **data_b,
+					size_t b_size)
 {
-	size_t i = 0, prior_count = 0, assc_count = 0;
-	size_t tot = prior_size + associated_size;
-	size_t mid, l = 0, h = prior_size - 1;
+	size_t i = 0, a_count = 0, b_count = 0;
+	size_t tot = a_size + b_size, cpy_size;
 	struct kshark_entry **merged_data;
 
 	merged_data = calloc(tot, sizeof(*merged_data));
-
-	/*
-	 * Calibrate the timestamp of the first entry of the associated data.
-	 */
-	calib(associated_data[0], argv);
-
-	if (prior_data[0]->ts < associated_data[0]->ts) {
-		/*
-		 * After executing the BSEARCH macro, "l" will be the index of
-		 * the last prior entry having timestamp < associated_data[0]->ts
-		 * and "h" will be the index of the first prior entry having
-		 * timestamp >= associated_data[0]->ts.
-		 */
-		BSEARCH(h, l, prior_data[mid]->ts < associated_data[0]->ts);
-
-		/*
-		 * The prior data needs no time calibration. Copy all entries
-		 * before (in time) the first entry of the associated data.
-		 */
-		memcpy(merged_data, prior_data, h * sizeof(*prior_data));
-		i = prior_count = h;
+	if (data_a[0]->ts < data_b[0]->ts) {
+		i = a_count = copy_prior_data(merged_data, data_a,
+					      a_size, data_b[0]->ts);
+	} else {
+		i = b_count = copy_prior_data(merged_data, data_b,
+					      b_size, data_a[0]->ts);
 	}
 
 	for (; i < tot; ++i) {
-		if (prior_data[prior_count]->ts <= associated_data[assc_count]->ts) {
-			merged_data[i] = prior_data[prior_count++];
-			if (prior_count == prior_size)
+		if (data_a[a_count]->ts <= data_b[b_count]->ts) {
+			merged_data[i] = data_a[a_count++];
+			if (a_count == a_size)
 				break;
 		} else {
-			merged_data[i] = associated_data[assc_count++];
-			if (assc_count == associated_size)
+			merged_data[i] = data_b[b_count++];
+			if (b_count == b_size)
 				break;
-
-			/* Calibrate the timestamp of the following entry. */
-			calib(associated_data[assc_count], argv);
 		}
 	}
 
-	if (prior_count == prior_size && assc_count < associated_size) {
-		/* Calibrate and copy the remaining associated data. */
-		for (++i; i < tot; ++i) {
-			merged_data[i] = associated_data[assc_count++];
-			calib(merged_data[i], argv);
-		}
-	} else if (prior_count < prior_size && assc_count == associated_size) {
-		/* Copy the remaining prior data. */
-		++i;
-		memcpy(&merged_data[i], &prior_data[prior_count],
-		       (tot - i) * sizeof(*prior_data));
-	}
+	/* Copy the remaining data. */
+	++i;
+	cpy_size = (tot - i) * sizeof(*merged_data);
+
+	if (a_count == a_size && b_count < b_size)
+		memcpy(&merged_data[i], &data_b[b_count], cpy_size);
+	else if (a_count < a_size && b_count == b_size)
+		memcpy(&merged_data[i], &data_a[a_count], cpy_size);
 
 	return merged_data;
 }

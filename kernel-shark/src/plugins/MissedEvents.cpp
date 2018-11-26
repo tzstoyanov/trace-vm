@@ -86,7 +86,7 @@ void MissedEventsMark::_draw(const Color &col, float size) const
 
 static void pluginDraw(kshark_context *kshark_ctx,
 		       KsCppArgV *argvCpp,
-		       int val, int draw_action)
+		       int sd, int val, int draw_action)
 {
 	int height = argvCpp->_graph->getHeight();
 	const kshark_entry *entry(nullptr);
@@ -97,12 +97,12 @@ static void pluginDraw(kshark_context *kshark_ctx,
 	for (int bin = 0; bin < nBins; ++bin) {
 		if (draw_action == KSHARK_PLUGIN_TASK_DRAW)
 			entry = ksmodel_get_task_missed_events(argvCpp->_histo,
-							       bin, val,
+							       bin, sd, val,
 							       nullptr,
 							       &index);
 		if (draw_action == KSHARK_PLUGIN_CPU_DRAW)
 			entry = ksmodel_get_cpu_missed_events(argvCpp->_histo,
-							      bin, val,
+							      bin, sd, val,
 							      nullptr,
 							      &index);
 
@@ -123,7 +123,7 @@ static void pluginDraw(kshark_context *kshark_ctx,
  * @param draw_action: Draw action identifier.
  */
 void draw_missed_events(kshark_cpp_argv *argv_c,
-			int val, int draw_action)
+			int sd, int val, int draw_action)
 {
 	kshark_context *kshark_ctx(NULL);
 
@@ -142,7 +142,7 @@ void draw_missed_events(kshark_cpp_argv *argv_c,
 		return;
 
 	try {
-		pluginDraw(kshark_ctx, argvCpp, val, draw_action);
+		pluginDraw(kshark_ctx, argvCpp, sd, val, draw_action);
 	} catch (const std::exception &exc) {
 		std::cerr << "Exception in MissedEvents\n" << exc.what();
 	}
