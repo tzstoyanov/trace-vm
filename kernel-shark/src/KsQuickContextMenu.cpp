@@ -127,6 +127,9 @@ KsQuickContextMenu::KsQuickContextMenu(KsDataStore *data, size_t row,
 	addSection("Pointer plot menu");
 
 	if (parentName == "KsTraceViewer") {
+		descr = QString("Show CPU [%1] only").arg(cpu);
+		lamAddAction(&_showCPUAction, &KsQuickContextMenu::_showCPU);
+
 		descr = "Add [";
 		descr += taskName;
 		descr += "-";
