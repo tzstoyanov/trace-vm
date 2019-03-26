@@ -26,8 +26,12 @@
 #include "trace-local.h"
 #include "trace-msg.h"
 
+typedef __u16 u16;
+typedef __s16 s16;
 typedef __u32 u32;
 typedef __be32 be32;
+typedef __u64 u64;
+typedef __s64 s64;
 
 static inline void dprint(const char *fmt, ...)
 {
@@ -50,6 +54,9 @@ static inline void dprint(const char *fmt, ...)
 
 unsigned int page_size;
 
+/* Try a few times to get an accurate time sync */
+#define TSYNC_TRIES 300
+
 struct tracecmd_msg_tinit {
 	be32 cpus;
 	be32 page_size;
@@ -71,6 +78,20 @@ struct tracecmd_msg_trace_resp {
 	be32 page_size;
 } __attribute__((packed));
 
+struct tracecmd_msg_tsync_stop {
+	long long offset;
+	long long timestamp;
+} __attribute__((packed));
+
+struct tracecmd_msg_tsync_req {
+	u16 cpu;
+} __attribute__((packed));
+
+struct tracecmd_msg_tsync_resp {
+	u64 time;
+} __attribute__((packed));
+
+
 struct tracecmd_msg_header {
 	be32	size;
 	be32	cmd;
@@ -78,14 +99,19 @@ struct tracecmd_msg_header {
 } __attribute__((packed));
 
 #define MSG_MAP								\
-	C(CLOSE,	0,	0),					\
-	C(TINIT,	1,	sizeof(struct tracecmd_msg_tinit)),	\
-	C(RINIT,	2,	sizeof(struct tracecmd_msg_rinit)),	\
-	C(SEND_DATA,	3,	0),					\
-	C(FIN_DATA,	4,	0),					\
-	C(NOT_SUPP,	5,	0),					\
-	C(TRACE_REQ,	6,	sizeof(struct tracecmd_msg_trace_req)),	\
-	C(TRACE_RESP,	7,	sizeof(struct tracecmd_msg_trace_resp)),
+	C(CLOSE,	  0,	0),					\
+	C(TINIT,	  1,	sizeof(struct tracecmd_msg_tinit)),	\
+	C(RINIT,	  2,	sizeof(struct tracecmd_msg_rinit)),	\
+	C(SEND_DATA,	  3,	0),					\
+	C(FIN_DATA,	  4,	0),					\
+	C(NOT_SUPP,	  5,	0),					\
+	C(TRACE_REQ,	  6,	sizeof(struct tracecmd_msg_trace_req)),	\
+	C(TRACE_RESP,	  7,	sizeof(struct tracecmd_msg_trace_resp)),\
+	C(TSYNC_START,	  8,	0),					\
+	C(TSYNC_STOP,	  9,	sizeof(struct tracecmd_msg_tsync_stop)),\
+	C(TSYNC_PROBE,	  11,	0),					\
+	C(TSYNC_REQ,	  11,	sizeof(struct tracecmd_msg_tsync_req)),	\
+	C(TSYNC_RESP,	  12,	sizeof(struct tracecmd_msg_tsync_resp)),
 
 #undef C
 #define C(a,b,c)	MSG_##a = b
@@ -115,10 +141,13 @@ static const char *cmd_to_name(int cmd)
 struct tracecmd_msg {
 	struct tracecmd_msg_header		hdr;
 	union {
-		struct tracecmd_msg_tinit	tinit;
-		struct tracecmd_msg_rinit	rinit;
-		struct tracecmd_msg_trace_req	trace_req;
-		struct tracecmd_msg_trace_resp	trace_resp;
+		struct tracecmd_msg_tinit		tinit;
+		struct tracecmd_msg_rinit		rinit;
+		struct tracecmd_msg_trace_req		trace_req;
+		struct tracecmd_msg_trace_resp		trace_resp;
+		struct tracecmd_msg_tsync_stop		ts_stop;
+		struct tracecmd_msg_tsync_req		ts_req;
+		struct tracecmd_msg_tsync_resp		ts_resp;
 	};
 	char					*buf;
 } __attribute__((packed));
@@ -157,6 +186,7 @@ static int msg_write(int fd, struct tracecmd_msg *msg)
 
 enum msg_trace_flags {
 	MSG_TRACE_USE_FIFOS = 1 << 0,
+	MSG_TRACE_DO_TSYNC =  1 << 1,
 };
 
 static int make_tinit(struct tracecmd_msg_handle *msg_handle,
@@ -792,7 +822,8 @@ error:
 	return ret;
 }
 
-static int make_trace_req(struct tracecmd_msg *msg, int argc, char **argv, bool use_fifos)
+static int make_trace_req(struct tracecmd_msg *msg, int argc, char **argv,
+			  bool use_fifos, bool do_tsync)
 {
 	size_t args_size = 0;
 	char *p;
@@ -802,7 +833,12 @@ static int make_trace_req(struct tracecmd_msg *msg, int argc, char **argv, bool 
 		args_size += strlen(argv[i]) + 1;
 
 	msg->hdr.size = htonl(ntohl(msg->hdr.size) + args_size);
-	msg->trace_req.flags = use_fifos ? htonl(MSG_TRACE_USE_FIFOS) : htonl(0);
+	msg->trace_req.flags = 0;
+	if (use_fifos)
+		msg->trace_req.flags |= MSG_TRACE_USE_FIFOS;
+	if (do_tsync)
+		msg->trace_req.flags |= MSG_TRACE_DO_TSYNC;
+	msg->trace_req.flags = htonl(msg->trace_req.flags);
 	msg->trace_req.argc = htonl(argc);
 	msg->buf = calloc(args_size, 1);
 	if (!msg->buf)
@@ -816,13 +852,14 @@ static int make_trace_req(struct tracecmd_msg *msg, int argc, char **argv, bool 
 }
 
 int tracecmd_msg_send_trace_req(struct tracecmd_msg_handle *msg_handle,
-				int argc, char **argv, bool use_fifos)
+				int argc, char **argv, bool use_fifos,
+				bool do_tsync)
 {
 	struct tracecmd_msg msg;
 	int ret;
 
 	tracecmd_msg_init(MSG_TRACE_REQ, &msg);
-	ret = make_trace_req(&msg, argc, argv, use_fifos);
+	ret = make_trace_req(&msg, argc, argv, use_fifos, do_tsync);
 	if (ret < 0)
 		return ret;
 
@@ -835,7 +872,8 @@ int tracecmd_msg_send_trace_req(struct tracecmd_msg_handle *msg_handle,
   *     free(argv);
   */
 int tracecmd_msg_recv_trace_req(struct tracecmd_msg_handle *msg_handle,
-				int *argc, char ***argv, bool *use_fifos)
+				int *argc, char ***argv, bool *use_fifos,
+				bool *do_tsync)
 {
 	struct tracecmd_msg msg;
 	char *p, *buf_end, **args;
@@ -882,6 +920,7 @@ int tracecmd_msg_recv_trace_req(struct tracecmd_msg_handle *msg_handle,
 	*argc = nr_args;
 	*argv = args;
 	*use_fifos = ntohl(msg.trace_req.flags) & MSG_TRACE_USE_FIFOS;
+	*do_tsync = ntohl(msg.trace_req.flags) & MSG_TRACE_DO_TSYNC;
 
 	/*
 	 * On success we're passing msg.buf to the caller through argv[0] so we
@@ -901,8 +940,125 @@ out:
 	return ret;
 }
 
+int tracecmd_msg_rcv_time_sync(struct tracecmd_msg_handle *msg_handle,
+			       struct tracecmd_clock_sync *clock_context,
+			       long long *offset, long long *timestamp)
+{
+	struct tracecmd_time_sync_event event;
+	unsigned int remote_cid = 0;
+	struct tracecmd_msg msg;
+	int cpu_pid, ret;
+
+	if (clock_context == NULL || msg_handle == NULL)
+		return 0;
+
+	if (offset)
+		*offset = 0;
+
+	ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+	if (ret < 0 || ntohl(msg.hdr.cmd) == MSG_TSYNC_STOP)
+		return 0;
+	if (ntohl(msg.hdr.cmd) != MSG_TSYNC_START) {
+		handle_unexpected_msg(msg_handle, &msg);
+		return 0;
+	}
+
+	tracecmd_clock_get_peer(clock_context, &remote_cid, NULL);
+	tracecmd_msg_init(MSG_TSYNC_START, &msg);
+	tracecmd_msg_send(msg_handle->fd, &msg);
+	tracecmd_clock_synch_enable(clock_context);
+
+	do {
+		memset(&event, 0, sizeof(event));
+		ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+		if (ret < 0 || ntohl(msg.hdr.cmd) == MSG_TSYNC_STOP)
+			break;
+		if (ntohl(msg.hdr.cmd) != MSG_TSYNC_PROBE) {
+			handle_unexpected_msg(msg_handle, &msg);
+			break;
+		}
+		ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+		if (ret < 0 || ntohl(msg.hdr.cmd) == MSG_TSYNC_STOP)
+			break;
+		if (ntohl(msg.hdr.cmd) != MSG_TSYNC_REQ) {
+			handle_unexpected_msg(msg_handle, &msg);
+			break;
+		}
+		/* Get kvm event related to the corresponding VCPU context */
+		cpu_pid = get_guest_vcpu_pid(remote_cid, ntohs(msg.ts_req.cpu));
+		tracecmd_clock_find_event(clock_context, cpu_pid, &event);
+		tracecmd_msg_init(MSG_TSYNC_RESP, &msg);
+		msg.ts_resp.time = htonll(event.ts);
+		tracecmd_msg_send(msg_handle->fd, &msg);
+	} while (true);
+
+	tracecmd_clock_synch_disable(clock_context);
+
+	if (ret >= 0 && ntohl(msg.hdr.cmd) == MSG_TSYNC_STOP) {
+		if (offset)
+			*offset = ntohll(msg.ts_stop.offset);
+		if (timestamp)
+			*timestamp = ntohll(msg.ts_stop.timestamp);
+	}
+
+	msg_free(&msg);
+	return 0;
+}
+
+int tracecmd_msg_snd_time_sync(struct tracecmd_msg_handle *msg_handle,
+			       struct tracecmd_clock_sync *clock_context,
+			       long long *offset, long long *timestamp)
+{
+	struct tracecmd_time_sync_event event;
+	int sync_loop = TSYNC_TRIES;
+	struct tracecmd_msg msg;
+	int ret;
+
+	if (clock_context == NULL || msg_handle == NULL)
+		return 0;
+
+	tracecmd_msg_init(MSG_TSYNC_START, &msg);
+	tracecmd_msg_send(msg_handle->fd, &msg);
+	ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+	if (ret < 0 || ntohl(msg.hdr.cmd) != MSG_TSYNC_START)
+		return 0;
+	tracecmd_clock_synch_calc_reset(clock_context);
+	tracecmd_clock_synch_enable(clock_context);
+
+	do {
+		tracecmd_msg_init(MSG_TSYNC_PROBE, &msg);
+		tracecmd_msg_send(msg_handle->fd, &msg);
+		/* Get the ts and CPU of the sent event */
+		ret = tracecmd_clock_find_event(clock_context, -1, &event);
+		tracecmd_msg_init(MSG_TSYNC_REQ, &msg);
+		msg.ts_req.cpu = htons(event.cpu);
+		tracecmd_msg_send(msg_handle->fd, &msg);
+		memset(&msg, 0, sizeof(msg));
+		ret = tracecmd_msg_recv(msg_handle->fd, &msg);
+		if (ret < 0)
+			break;
+		if (ntohl(msg.hdr.cmd) != MSG_TSYNC_RESP) {
+			handle_unexpected_msg(msg_handle, &msg);
+			break;
+		}
+		tracecmd_clock_synch_calc_probe(clock_context,
+						event.ts,
+						htonll(msg.ts_resp.time));
+	} while (--sync_loop);
+
+	tracecmd_clock_synch_disable(clock_context);
+	tracecmd_clock_synch_calc(clock_context, offset, timestamp);
+	tracecmd_msg_init(MSG_TSYNC_STOP, &msg);
+	msg.ts_stop.offset = htonll(*offset);
+	msg.ts_stop.timestamp = htonll(*timestamp);
+	tracecmd_msg_send(msg_handle->fd, &msg);
+
+	msg_free(&msg);
+	return 0;
+}
+
 static int make_trace_resp(struct tracecmd_msg *msg, int page_size, int nr_cpus,
-			   unsigned int *ports, bool use_fifos)
+			   unsigned int *ports, bool use_fifos, bool do_tsync)
 {
 	int data_size;
 
@@ -913,7 +1069,12 @@ static int make_trace_resp(struct tracecmd_msg *msg, int page_size, int nr_cpus,
 	write_uints(msg->buf, data_size, ports, nr_cpus);
 
 	msg->hdr.size = htonl(ntohl(msg->hdr.size) + data_size);
-	msg->trace_resp.flags = use_fifos ? htonl(MSG_TRACE_USE_FIFOS) : htonl(0);
+	msg->trace_resp.flags = 0;
+	if (use_fifos)
+		msg->trace_resp.flags |= MSG_TRACE_USE_FIFOS;
+	if (do_tsync)
+		msg->trace_resp.flags |= MSG_TRACE_DO_TSYNC;
+	msg->trace_resp.flags = htonl(msg->trace_resp.flags);
 	msg->trace_resp.cpus = htonl(nr_cpus);
 	msg->trace_resp.page_size = htonl(page_size);
 
@@ -922,13 +1083,14 @@ static int make_trace_resp(struct tracecmd_msg *msg, int page_size, int nr_cpus,
 
 int tracecmd_msg_send_trace_resp(struct tracecmd_msg_handle *msg_handle,
 				 int nr_cpus, int page_size,
-				 unsigned int *ports, bool use_fifos)
+				 unsigned int *ports, bool use_fifos,
+				 bool do_tsync)
 {
 	struct tracecmd_msg msg;
 	int ret;
 
 	tracecmd_msg_init(MSG_TRACE_RESP, &msg);
-	ret = make_trace_resp(&msg, page_size, nr_cpus, ports, use_fifos);
+	ret = make_trace_resp(&msg, page_size, nr_cpus, ports, use_fifos, do_tsync);
 	if (ret < 0)
 		return ret;
 
@@ -937,7 +1099,8 @@ int tracecmd_msg_send_trace_resp(struct tracecmd_msg_handle *msg_handle,
 
 int tracecmd_msg_recv_trace_resp(struct tracecmd_msg_handle *msg_handle,
 				 int *nr_cpus, int *page_size,
-				 unsigned int **ports, bool *use_fifos)
+				 unsigned int **ports, bool *use_fifos,
+				 bool *do_tsync)
 {
 	struct tracecmd_msg msg;
 	char *p, *buf_end;
@@ -960,6 +1123,7 @@ int tracecmd_msg_recv_trace_resp(struct tracecmd_msg_handle *msg_handle,
 	}
 
 	*use_fifos = ntohl(msg.trace_resp.flags) & MSG_TRACE_USE_FIFOS;
+	*do_tsync = ntohl(msg.trace_resp.flags) & MSG_TRACE_DO_TSYNC;
 	*nr_cpus = ntohl(msg.trace_resp.cpus);
 	*page_size = ntohl(msg.trace_resp.page_size);
 	*ports = calloc(*nr_cpus, sizeof(**ports));

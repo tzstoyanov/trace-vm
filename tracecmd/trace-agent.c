@@ -132,6 +132,7 @@ static void agent_handle(int sd, int nr_cpus, int page_size)
 	char **argv = NULL;
 	int argc = 0;
 	bool use_fifos;
+	bool do_tsync;
 	int *fds;
 	int ret;
 
@@ -144,7 +145,8 @@ static void agent_handle(int sd, int nr_cpus, int page_size)
 	if (!msg_handle)
 		die("Failed to allocate message handle");
 
-	ret = tracecmd_msg_recv_trace_req(msg_handle, &argc, &argv, &use_fifos);
+	ret = tracecmd_msg_recv_trace_req(msg_handle, &argc, &argv,
+					  &use_fifos, &do_tsync);
 	if (ret < 0)
 		die("Failed to receive trace request");
 
@@ -153,13 +155,18 @@ static void agent_handle(int sd, int nr_cpus, int page_size)
 
 	if (!use_fifos)
 		make_vsocks(nr_cpus, fds, ports);
+	if (do_tsync) {
+		do_tsync = tracecmd_time_sync_check();
+		if (!do_tsync)
+			warning("Failed to negotiate timestamps synchronization with the host");
+	}
 
 	ret = tracecmd_msg_send_trace_resp(msg_handle, nr_cpus, page_size,
-					   ports, use_fifos);
+					   ports, use_fifos, do_tsync);
 	if (ret < 0)
 		die("Failed to send trace response");
 
-	trace_record_agent(msg_handle, nr_cpus, fds, argc, argv, use_fifos);
+	trace_record_agent(msg_handle, nr_cpus, fds, argc, argv, use_fifos, do_tsync);
 
 	free(argv[0]);
 	free(argv);
