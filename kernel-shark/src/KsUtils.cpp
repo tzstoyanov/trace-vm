@@ -794,6 +794,7 @@ void KsPluginManager::unregisterPlugin(const QString &plugin)
 	}
 }
 
+#if 0
 /** @brief Add to the list and initialize user-provided plugins. All other
  *	   previously loaded plugins will be reinitialized and the data will be
  *	   reloaded.
@@ -816,6 +817,7 @@ void KsPluginManager::addPlugins(const QStringList &fileNames)
 
 	emit dataReload();
 }
+#endif
 
 /** Unload all plugins. */
 void KsPluginManager::unloadAll()

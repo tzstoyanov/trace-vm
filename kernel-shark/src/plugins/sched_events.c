@@ -87,8 +87,7 @@ static bool plugin_sched_init_context(struct kshark_context *kshark_ctx,
 				       "sched", "sched_switch");
 	if (!event) {
 		fprintf(stderr, "No sched_switch events in stream %i.\n", sd);
-		plugin_free_context(plugin_ctx);
-		plugin_sched_context_handler = NULL;
+		free(plugin_ctx);
 		return false;
 	}
 

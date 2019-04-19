@@ -43,8 +43,10 @@ KsGLWidget::KsGLWidget(QWidget *parent)
 
 KsGLWidget::~KsGLWidget()
 {
-	for (auto &g: _graphs)
-		delete g;
+	for (auto &stream: _graphs) {
+		for (auto &g: stream)
+			delete g;
+	}
 }
 
 /** Reimplemented function used to set up all required OpenGL resources. */

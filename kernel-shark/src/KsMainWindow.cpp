@@ -963,7 +963,7 @@ void KsMainWindow::_pluginAdd()
 	if (fileNames.isEmpty())
 		return;
 
-	_plugins.addPlugins(fileNames);
+//	_plugins.addPlugins(fileNames);
 }
 
 void KsMainWindow::_record()
