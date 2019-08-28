@@ -55,7 +55,7 @@ static inline void dprint(const char *fmt, ...)
 unsigned int page_size;
 
 /* Try a few times to get an accurate time sync */
-#define TSYNC_TRIES 300
+#define TSYNC_TRIES 1000
 
 struct tracecmd_msg_tinit {
 	be32 cpus;

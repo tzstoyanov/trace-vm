@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <linux/vm_sockets.h>
+#include <time.h>
+#include <sched.h>
 #include "trace-local.h"
 
 static int clock_sync_x86_host_init(struct tracecmd_clock_sync *clock_context);
@@ -20,6 +22,17 @@ static int clock_sync_x86_guest_free(struct tracecmd_clock_sync *clock_context);
 static int clock_sync_x86_guest_find_events(struct tracecmd_clock_sync *clock,
 					    int pid,
 					    struct tracecmd_time_sync_event *event);
+
+static int clock_gen_ptp_init(struct tracecmd_clock_sync *clock_context);
+static int clock_gen_ptp_free(struct tracecmd_clock_sync *clock_context);
+static int clock_gen_ptp_free_find_events(struct tracecmd_clock_sync *clock,
+					    int pid,
+					    struct tracecmd_time_sync_event *event);
+void clock_get_ptp_calc_offset(struct tracecmd_clock_sync *clock_context,
+					long long *ts_local, long long *ts_remote);
+
+#define PTP_MARK	/* Use PTP + ftrace markers */
+//#define PTP_CLOCK	/* Use PTP + clock_gettime */
 
 struct tracecmd_event_descr {
 	char			*system;
@@ -35,6 +48,8 @@ struct tracecmd_ftrace_param {
 enum clock_sync_context {
 	CLOCK_KVM_X86_VSOCK_HOST,
 	CLOCK_KVM_X86_VSOCK_GUEST,
+	CLOCK_PTP_GENERIC_HOST,
+	CLOCK_PTP_GENERIC_GUEST,
 	CLOCK_CONTEXT_MAX,
 };
 
@@ -45,6 +60,7 @@ struct tracecmd_clock_sync {
 	int				events_count;
 	struct tep_handle		*tep;
 	struct buffer_instance		*vinst;
+	int				marker_fd;
 
 	int				probes_count;
 	int				bad_probes;
@@ -71,6 +87,8 @@ struct {
 	int (*clock_sync_find_events)(struct tracecmd_clock_sync *clock_context,
 				      int pid,
 				      struct tracecmd_time_sync_event *event);
+	void (*clock_sync_calc_offset)(struct tracecmd_clock_sync *clock_context,
+						long long *ts_local, long long *ts_remote);
 	int (*clock_sync_load)(struct tracecmd_clock_sync *clock_context);
 	int (*clock_sync_unload)(struct tracecmd_clock_sync *clock_context);
 } static clock_sync[CLOCK_CONTEXT_MAX] = {
@@ -96,7 +114,7 @@ struct {
 	 .ftrace_params = {
 	  {"set_ftrace_filter", "vp_notify", "\0"},
 	  {"current_tracer", "function", "nop"},
-  {"events/vsock/virtio_transport_alloc_pkt/enable", "1", "0"},
+	  {"events/vsock/virtio_transport_alloc_pkt/enable", "1", "0"},
 	  {"events/vsock/virtio_transport_alloc_pkt/filter", NULL, "\0"},
 	  {NULL, NULL, NULL},
 	  },
@@ -108,8 +126,120 @@ struct {
 	  clock_sync_x86_guest_init,
 	  clock_sync_x86_guest_free,
 	  clock_sync_x86_guest_find_events,
+	},
+	{ /* CLOCK_PTP_GENERIC_HOST */
+	 .systems = { "ftrace", NULL, NULL},
+	 .ftrace_params = {
+	  {NULL, NULL, NULL},
+	  {NULL, NULL, NULL},
+	  {NULL, NULL, NULL},
+	  {NULL, NULL, NULL},
+	  {NULL, NULL, NULL},
+			  },
+			  .events = {
+			  {.system = "ftrace", .name = "raw_data"},
+			  {.system = NULL, .name = NULL},
+			  {.system = NULL, .name = NULL}
+			 },
+			  clock_gen_ptp_init,
+			  clock_gen_ptp_free,
+			  clock_gen_ptp_free_find_events,
+			  clock_get_ptp_calc_offset,
+	},
+	{ /* CLOCK_PTP_GENERIC_GUEST */
+			 .systems = { "ftrace", NULL, NULL},
+			 .ftrace_params = {
+			  {NULL, NULL, NULL},
+			  {NULL, NULL, NULL},
+			  {NULL, NULL, NULL},
+			  {NULL, NULL, NULL},
+			  {NULL, NULL, NULL},
+					  },
+					  .events = {
+					  {.system = "ftrace", .name = "raw_data"},
+					  {.system = NULL, .name = NULL},
+					  {.system = NULL, .name = NULL}
+					 },
+					  clock_gen_ptp_init,
+					  clock_gen_ptp_free,
+					  clock_gen_ptp_free_find_events,
+					  clock_get_ptp_calc_offset,
 	}
 };
+
+static int clock_gen_ptp_init(struct tracecmd_clock_sync *clock_context)
+{
+	char *path;
+
+	path = get_instance_file(clock_context->vinst, "trace_marker_raw");
+	clock_context->marker_fd = open(path, O_WRONLY);
+	tracecmd_put_tracing_file(path);
+	return 1;
+}
+
+static int clock_gen_ptp_free(struct tracecmd_clock_sync *clock_context)
+{
+	close(clock_context->marker_fd);
+	return 1;
+}
+
+int find_raw_events(struct tep_handle *tep,
+		    struct buffer_instance *instance,
+		    struct tracecmd_time_sync_event *events);
+
+#define STAMP	"stamp"
+static int clock_gen_ptp_free_find_events(struct tracecmd_clock_sync *clock,
+					   int pid,
+					   struct tracecmd_time_sync_event *event)
+{
+
+#ifdef PTP_MARK
+	if (write(clock->marker_fd, STAMP, 5) == 5) {
+		find_raw_events(clock->tep, clock->vinst, clock->events);
+		event->ts = clock->events[0].ts;
+		event->cpu = clock->events[0].cpu;
+
+		return 1;
+	}
+
+	event->ts = 0;
+	return 0;
+#else
+	struct timespec ts;
+	event->cpu = 0;
+
+	if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) == 0) {
+		event->ts = ts.tv_nsec + ts.tv_sec * 1000000000LL;
+		return 1;
+	}
+
+	event->ts = 0;
+	return 0;
+#endif
+}
+
+void clock_get_ptp_calc_offset(struct tracecmd_clock_sync *clock,
+				long long *ts_local, long long *ts_remote)
+{
+#ifdef PTP_MARK
+	long long t;
+
+	if (write(clock->marker_fd, STAMP, 5) != 5)
+		return;
+	find_raw_events(clock->tep, clock->vinst, clock->events);
+	t = clock->events[0].ts;
+
+	*ts_local = (*ts_local + t) / 2;
+#else
+	struct timespec ts;
+	long long t;
+
+	if (clock_gettime(CLOCK_MONOTONIC_RAW, &ts) != 0)
+		return;
+	t = ts.tv_nsec + ts.tv_sec * 1000000000LL;
+	*ts_local = (*ts_local + t) / 2;
+#endif
+}
 
 static int clock_sync_x86_host_init(struct tracecmd_clock_sync *clock_context)
 {
@@ -242,7 +372,7 @@ static int find_sync_events(struct tep_handle *pevent,
 }
 
 //#define TSYNC_RBUFFER_DEBUG
-static int find_raw_events(struct tep_handle *tep,
+int find_raw_events(struct tep_handle *tep,
 		    struct buffer_instance *instance,
 		    struct tracecmd_time_sync_event *events)
 {
@@ -307,8 +437,8 @@ static int find_raw_events(struct tep_handle *tep,
 	qsort(events_array, events_count, sizeof(*events_array), sync_events_cmp);
 	r = find_sync_events(tep, events_array, events_count, events);
 #ifdef TSYNC_RBUFFER_DEBUG
-	len = 0;
-	while (events[len].id) {
+	int len = 0;
+	while (events && events[len].id) {
 		printf("Found %d @ cpu %d: %lld pid %d\n\r",
 			events[len].id,  events[len].cpu,
 			events[len].ts, events[len].pid);
@@ -492,6 +622,9 @@ tracecmd_clock_context_new(struct tracecmd_msg_handle *msg_handle,
 	case CLOCK_KVM_X86_VSOCK_GUEST:
 		break;
 #endif
+	case CLOCK_PTP_GENERIC_HOST:
+	case CLOCK_PTP_GENERIC_GUEST:
+		break;
 	default: /* not supported clock sync context */
 		return NULL;
 	}
@@ -514,12 +647,12 @@ tracecmd_clock_context_new(struct tracecmd_msg_handle *msg_handle,
 	clock_context_copy(clock_context,
 			   clock_sync[id].ftrace_params, clock_sync[id].events);
 
-	if (clock_sync[id].clock_sync_init)
-		clock_sync[id].clock_sync_init(clock_context);
-
 	clock_context->vinst = clock_synch_create_instance(clock_str, clock_context->remote_cid);
 	clock_context->tep = clock_synch_get_tep(clock_context->vinst,
 						 clock_sync[id].systems);
+	if (clock_sync[id].clock_sync_init)
+		clock_sync[id].clock_sync_init(clock_context);
+
 	i = 0;
 	while (clock_sync[id].events[i].name) {
 		event = tep_find_event_by_name(clock_context->tep,
@@ -581,37 +714,107 @@ bool tracecmd_time_sync_check(void)
 	return false;
 }
 
+static cpu_set_t *pit_to_cpu()
+{
+	int cpus = count_cpus();
+	cpu_set_t *cpu_mask;
+	cpu_set_t *pin_mask;
+	int mask_size;
+	int i;
+
+	cpu_mask = CPU_ALLOC(cpus);
+	pin_mask = CPU_ALLOC(cpus);
+	if (!cpu_mask || !pin_mask)
+		goto out;
+
+	mask_size = CPU_ALLOC_SIZE(cpus);
+	CPU_ZERO_S(mask_size, cpu_mask);
+	CPU_ZERO_S(mask_size, pin_mask);
+
+	if (sched_getaffinity(0, mask_size, cpu_mask) == -1)
+		goto out;
+
+	for (i = 0; i < cpus; i++) {
+		if (CPU_ISSET_S(i, mask_size, cpu_mask)) {
+			CPU_SET_S(i, mask_size, pin_mask);
+			break;
+		}
+	}
+
+	if (CPU_COUNT_S(mask_size, pin_mask) < 1)
+		goto out;
+
+	if (sched_setaffinity(0, mask_size, pin_mask) == -1)
+		goto out;
+
+	CPU_FREE(pin_mask);
+	return cpu_mask;
+out:
+	if (cpu_mask)
+		CPU_FREE(cpu_mask);
+	if (pin_mask)
+		CPU_FREE(pin_mask);
+	return NULL;
+}
+
 void sync_time_with_host_v3(struct buffer_instance *instance)
 {
+	int cpus = count_cpus();
 	long long timestamp = 0;
 	long long offset = 0;
+	cpu_set_t *cpu_mask = NULL;
 
 	if (!instance->do_tsync)
 		return;
 
+	cpu_mask = pit_to_cpu();
+
+#if defined(PTP_MARK) || defined(PTP_CLOCK)
+	if (instance->clock_sync == NULL)
+		instance->clock_sync = tracecmd_clock_context_new(instance->msg_handle,
+					instance->clock, CLOCK_PTP_GENERIC_GUEST);
+#else
 	if (instance->clock_sync == NULL)
 		instance->clock_sync = tracecmd_clock_context_new(instance->msg_handle,
 					instance->clock, CLOCK_KVM_X86_VSOCK_GUEST);
+#endif
+
 
 	tracecmd_msg_snd_time_sync(instance->msg_handle, instance->clock_sync,
 				   &offset, &timestamp);
 	if (!offset && !timestamp)
 		warning("Failed to synchronize timestamps with the host");
+
+	if (cpu_mask) {
+		sched_setaffinity(0, CPU_ALLOC_SIZE(cpus), cpu_mask);
+		CPU_FREE(cpu_mask);
+	}
 }
 
 void sync_time_with_guest_v3(struct buffer_instance *instance)
 {
+	int cpus = count_cpus();
 	long long timestamp = 0;
 	long long offset = 0;
 	long long *sync_array_ts;
 	long long *sync_array_offs;
+	cpu_set_t *cpu_mask = NULL;
 
 	if (!instance->do_tsync)
 		return;
 
+	cpu_mask = pit_to_cpu();
+
+#if defined(PTP_MARK) || defined(PTP_CLOCK)
+	if (instance->clock_sync == NULL)
+		instance->clock_sync = tracecmd_clock_context_new(instance->msg_handle,
+						top_instance.clock, CLOCK_PTP_GENERIC_HOST);
+#else
 	if (instance->clock_sync == NULL)
 		instance->clock_sync = tracecmd_clock_context_new(instance->msg_handle,
 						top_instance.clock, CLOCK_KVM_X86_VSOCK_HOST);
+#endif
+
 
 	tracecmd_msg_rcv_time_sync(instance->msg_handle,
 				   instance->clock_sync, &offset, &timestamp);
@@ -619,7 +822,7 @@ void sync_time_with_guest_v3(struct buffer_instance *instance)
 	if (!offset && !timestamp) {
 		warning("Failed to synchronize timestamps with guest %s",
 			instance->name);
-		return;
+		goto out;
 	}
 
 	sync_array_ts = realloc(instance->time_sync_ts,
@@ -639,6 +842,11 @@ void sync_time_with_guest_v3(struct buffer_instance *instance)
 		free(sync_array_offs);
 	}
 
+out:
+	if (cpu_mask) {
+		sched_setaffinity(0, CPU_ALLOC_SIZE(cpus), cpu_mask);
+		CPU_FREE(cpu_mask);
+	}
 }
 
 static void set_clock_synch_events(struct buffer_instance *instance,
@@ -722,9 +930,10 @@ int tracecmd_clock_synch_calc(struct tracecmd_clock_sync *clock_context,
 	if (time_ret)
 		*time_ret = time;
 #ifdef TSYNC_DEBUG
-	printf("\n calculated offset: %lld, %d/%d probes\n\r",
+	printf("\n calculated offset: %lld, %d/%d probes, filtered out %d\n\r",
 		*offset_ret, clock_context->probes_count,
-		clock_context->probes_count + clock_context->bad_probes);
+		clock_context->probes_count + clock_context->bad_probes,
+		clock_context->probes_count-j);
 #endif
 	return 1;
 }
@@ -748,63 +957,68 @@ void tracecmd_clock_synch_calc_reset(struct tracecmd_clock_sync *clock_context)
 
 }
 
-void tracecmd_clock_synch_calc_probe(struct tracecmd_clock_sync *clock_context,
+void tracecmd_clock_synch_calc_probe(struct tracecmd_clock_sync *clock,
 				     long long ts_local, long long ts_remote)
 {
 	int count;
+	int id;
 #ifdef TSYNC_DEBUG
 	char buff[256];
 #endif
 
-	if (!clock_context || !ts_local || !ts_remote)
+	if (!clock || !ts_local || !ts_remote)
 		return;
 	if (!ts_local || !ts_remote) {
-		clock_context->bad_probes++;
+		clock->bad_probes++;
 		return;
 	}
 
-	if (!clock_context->offsets && !clock_context->times) {
-		clock_context->offsets = calloc(10, sizeof(long long));
-		clock_context->times = calloc(10, sizeof(long long));
-		clock_context->probes_size = 10;
+	id = clock->clock_context_id;
+	if (clock_sync[id].clock_sync_calc_offset)
+		clock_sync[id].clock_sync_calc_offset(clock, &ts_local, &ts_remote);
+
+	if (!clock->offsets && !clock->times) {
+		clock->offsets = calloc(10, sizeof(long long));
+		clock->times = calloc(10, sizeof(long long));
+		clock->probes_size = 10;
 	}
 
-	if (clock_context->probes_size == clock_context->probes_count) {
-		clock_context->probes_size = (3*clock_context->probes_size)/2;
-		clock_context->offsets = realloc(clock_context->offsets,
-						 clock_context->probes_size *
+	if (clock->probes_size == clock->probes_count) {
+		clock->probes_size = (3*clock->probes_size)/2;
+		clock->offsets = realloc(clock->offsets,
+				clock->probes_size *
 						 sizeof(long long));
-		clock_context->times = realloc(clock_context->times,
-					       clock_context->probes_size*
+		clock->times = realloc(clock->times,
+				clock->probes_size*
 					       sizeof(long long));
 	}
 
-	if (!clock_context->offsets || !clock_context->times) {
-		clock_context->probes_size = 0;
-		tracecmd_clock_synch_calc_reset(clock_context);
+	if (!clock->offsets || !clock->times) {
+		clock->probes_size = 0;
+		tracecmd_clock_synch_calc_reset(clock);
 		return;
 	}
 #ifdef TSYNC_DEBUG
-	if (clock_context->debug_fd < 0) {
-		sprintf(buff, "s-cid%d.txt", clock_context->remote_cid);
-		clock_context->debug_fd = open(buff, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+	if (clock->debug_fd < 0) {
+		sprintf(buff, "s-cid%d.txt", clock->remote_cid);
+		clock->debug_fd = open(buff, O_CREAT|O_WRONLY|O_TRUNC, 0644);
 	}
 #endif
-	count = clock_context->probes_count;
-	clock_context->probes_count++;
-	clock_context->offsets[count] = ts_remote - ts_local;
-	clock_context->times[count] = ts_local;
-	clock_context->offset_av += clock_context->offsets[count];
+	count = clock->probes_count;
+	clock->probes_count++;
+	clock->offsets[count] = ts_remote - ts_local;
+	clock->times[count] = ts_local;
+	clock->offset_av += clock->offsets[count];
 
-	if (!clock_context->offset_min ||
-	    clock_context->offset_min > llabs(clock_context->offsets[count]))
-		clock_context->offset_min = llabs(clock_context->offsets[count]);
-	if (!clock_context->offset_max ||
-	    clock_context->offset_max < llabs(clock_context->offsets[count]))
-		clock_context->offset_max = llabs(clock_context->offsets[count]);
+	if (!clock->offset_min ||
+			clock->offset_min > llabs(clock->offsets[count]))
+		clock->offset_min = llabs(clock->offsets[count]);
+	if (!clock->offset_max ||
+			clock->offset_max < llabs(clock->offsets[count]))
+		clock->offset_max = llabs(clock->offsets[count]);
 #ifdef TSYNC_DEBUG
-	sprintf(buff, "%lld %lld\n", ts_local, ts_remote);
-	write(clock_context->debug_fd, buff, strlen(buff));
+	sprintf(buff, "%lld %lld %lld\n", ts_local, ts_remote, ts_remote - ts_local);
+	write(clock->debug_fd, buff, strlen(buff));
 #endif
 
 }
