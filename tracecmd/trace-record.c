@@ -217,6 +217,8 @@ struct common_record_context {
 	char *date2ts;
 	char *user;
 	int data_flags;
+	int time_shift_count;
+	struct tracecmd_option *time_shift_option;
 
 	int record_all;
 	int total_disable;
@@ -663,7 +665,11 @@ static void tell_guests_to_stop(void)
 		if (is_guest(instance))
 			tracecmd_msg_send_close_msg(instance->msg_handle);
 	}
+}
 
+static void close_guests_handle(void)
+{
+	struct buffer_instance *instance;
 	/* Wait for guests to acknowledge */
 	for_all_instances(instance) {
 		if (is_guest(instance)) {
@@ -3686,6 +3692,7 @@ static void connect_to_agent(struct buffer_instance *instance)
 	unsigned int *ports;
 	int i, *fds = NULL;
 	bool use_fifos = false;
+	bool do_tsync, do_tsync_reply;
 
 	if (!no_fifos) {
 		nr_fifos = open_guest_fifos(instance->name, &fds);
@@ -3696,20 +3703,25 @@ static void connect_to_agent(struct buffer_instance *instance)
 	if (sd < 0)
 		die("Failed to connect to vsocket @%u:%u",
 		    instance->cid, instance->port);
+	do_tsync = tracecmd_time_sync_check();
 
 	msg_handle = tracecmd_msg_handle_alloc(sd, 0);
 	if (!msg_handle)
 		die("Failed to allocate message handle");
 
 	ret = tracecmd_msg_send_trace_req(msg_handle, instance->argc,
-					  instance->argv, use_fifos);
+					  instance->argv, use_fifos, do_tsync);
 	if (ret < 0)
 		die("Failed to send trace request");
 
 	ret = tracecmd_msg_recv_trace_resp(msg_handle, &nr_cpus, &page_size,
-					   &ports, &use_fifos);
+					   &ports, &use_fifos, &do_tsync_reply);
 	if (ret < 0)
 		die("Failed to receive trace response");
+
+	if (do_tsync != do_tsync_reply)
+		warning("Failed to negotiate timestamps synchronization with the guest %s",
+			instance->name);
 
 	if (use_fifos) {
 		if (nr_cpus != nr_fifos) {
@@ -3728,10 +3740,13 @@ static void connect_to_agent(struct buffer_instance *instance)
 	}
 
 	instance->use_fifos = use_fifos;
+	instance->do_tsync = do_tsync_reply;
 	instance->cpu_count = nr_cpus;
 
 	/* the msg_handle now points to the guest fd */
 	instance->msg_handle = msg_handle;
+
+	sync_time_with_guest_v3(instance);
 }
 
 static void setup_guest(struct buffer_instance *instance)
@@ -3756,9 +3771,12 @@ static void setup_guest(struct buffer_instance *instance)
 	close(fd);
 }
 
-static void setup_agent(struct buffer_instance *instance, struct common_record_context *ctx)
+static void setup_agent(struct buffer_instance *instance,
+			struct common_record_context *ctx)
 {
 	struct tracecmd_output *network_handle;
+
+	sync_time_with_host_v3(instance);
 
 	network_handle = tracecmd_create_init_fd_msg(instance->msg_handle,
 						     listed_events);
@@ -5966,6 +5984,19 @@ static void parse_record_options(int argc,
 		}
 	}
 
+	/* If -C is specified, prepend clock to all guest VM flags */
+	if (top_instance.clock) {
+		struct buffer_instance *instance;
+
+		for_all_instances(instance) {
+			if (is_guest(instance)) {
+				add_argv(instance, (char*)top_instance.clock, true);
+				add_argv(instance, "-C", true);
+			}
+		}
+	}
+
+
 	if (!ctx->filtered && ctx->instance->filter_mod)
 		add_func(&ctx->instance->filter_funcs,
 			 ctx->instance->filter_mod, "*");
@@ -6061,7 +6092,42 @@ static bool has_local_instances(void)
 	}
 	return false;
 }
+#define TSYNC_DEBUG
 
+static void write_guest_time_shift(struct buffer_instance *instance)
+{
+	struct tracecmd_output *handle;
+	struct iovec vector[3];
+	char *file;
+	int fd;
+
+	if (!instance->time_sync_count)
+		return;
+
+	file = get_guest_file(output_file, instance->name);
+	fd = open(file, O_RDWR);
+	if (fd < 0)
+		die("error opening %s", file);
+	put_temp_file(file);
+	handle = tracecmd_get_output_handle_fd(fd);
+	vector[0].iov_len = 4;
+	vector[0].iov_base = &instance->time_sync_count;
+	vector[1].iov_len = 8 * instance->time_sync_count;
+	vector[1].iov_base = instance->time_sync_ts;
+	vector[2].iov_len = 8 * instance->time_sync_count;
+	vector[2].iov_base = instance->time_sync_offsets;
+	tracecmd_add_option_v(handle, TRACECMD_OPTION_TIME_SHIFT, vector, 3);
+	tracecmd_append_options(handle);
+	tracecmd_output_close(handle);
+#ifdef TSYNC_DEBUG
+	if (instance->time_sync_count > 1)
+		printf("\n\rDetected %lld ns ts offset drift in %lld ns for guest %s\n\r",
+			instance->time_sync_offsets[instance->time_sync_count-1] -
+			instance->time_sync_offsets[0],
+			instance->time_sync_ts[instance->time_sync_count-1]-
+			instance->time_sync_ts[0], instance->name);
+#endif
+}
 /*
  * This function contains common code for the following commands:
  * record, start, stream, profile.
@@ -6187,6 +6253,20 @@ static void record_trace(int argc, char **argv,
 
 	if (!latency)
 		wait_threads();
+
+	if (ctx->instance && is_agent(ctx->instance)) {
+		sync_time_with_host_v3(ctx->instance);
+		tracecmd_clock_context_free(ctx->instance);
+	} else {
+		for_all_instances(instance) {
+			if (is_guest(instance)) {
+				sync_time_with_guest_v3(instance);
+				write_guest_time_shift(instance);
+				tracecmd_clock_context_free(instance);
+			}
+		}
+	}
+	close_guests_handle();
 
 	if (IS_RECORD(ctx)) {
 		record_data(ctx);
@@ -6328,7 +6408,7 @@ void trace_record(int argc, char **argv)
 int trace_record_agent(struct tracecmd_msg_handle *msg_handle,
 		       int cpus, int *fds,
 		       int argc, char **argv,
-		       bool use_fifos)
+		       bool use_fifos, bool do_tsync)
 {
 	struct common_record_context ctx;
 	char **argv_plus;
@@ -6355,6 +6435,7 @@ int trace_record_agent(struct tracecmd_msg_handle *msg_handle,
 
 	ctx.instance->fds = fds;
 	ctx.instance->use_fifos = use_fifos;
+	ctx.instance->do_tsync = do_tsync;
 	ctx.instance->flags |= BUFFER_FL_AGENT;
 	ctx.instance->msg_handle = msg_handle;
 	msg_handle->version = V3_PROTOCOL;
